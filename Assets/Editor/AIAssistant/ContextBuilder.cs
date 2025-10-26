@@ -40,6 +40,13 @@ namespace UnityEditor.AIAssistant
             sb.AppendLine("- Be helpful and conversational");
             sb.AppendLine("- If uncertain, ask clarifying questions");
             sb.AppendLine();
+            sb.AppendLine("IMPORTANT - Creation vs Modification:");
+            sb.AppendLine("- If the user asks to CREATE something WITH modifications (e.g., 'create a branch with a rigidbody'),");
+            sb.AppendLine("  create the object FIRST, then ASK the user if they want to apply the modifications now.");
+            sb.AppendLine("- Do NOT automatically chain creation and modification in a single response.");
+            sb.AppendLine("- Example: User says 'create a rock with a rigidbody' -> Create the rock, then respond:");
+            sb.AppendLine("  'I've created the rock. Would you like me to add the Rigidbody component now?'");
+            sb.AppendLine();
             sb.AppendLine("---");
             sb.AppendLine("Context Pack v2.1");
             sb.AppendLine();
