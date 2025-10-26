@@ -1,0 +1,740 @@
+# Architecture: Prefab Folder Configuration for Asset Store Distribution
+# Purpose: Restructure folder layout and prefab system for professional Asset Store release
+# Context: Current hardcoded "Assets/AIPrefabs" path won't work for asset store users
+# Solution: Ship with example prefabs, clear path to user's own prefabs
+
+Design_Philosophy:
+  Immediate_Usability: "Tool works out-of-box with examples - user can try in 30 seconds"
+  Clear_Expectations: "Examples are clearly marked as demonstrations, not production content"
+  Low_Friction_Migration: "Single path change + scan to switch to user's own prefabs"
+  Deletable_Examples: "Examples folder can be safely deleted once user doesn't need it"
+  Standard_Pattern: "Follows Unity asset conventions (like TextMesh Pro, Standard Assets)"
+  Minimal_Examples: "Demonstrates tool mechanics, not a content library - users buy this for THEIR prefabs"
+
+Current_State:
+  Problems:
+    - Hardcoded path: "Assets/AIPrefabs" in AIAssistantSettings.cs line 40
+    - User must manually create AIPrefabs folder (confusing on first import)
+    - No sample prefabs shipped (can't demo immediately)
+    - Path in root Assets folder (pollutes user's project structure)
+    - Settings file hardcoded to "Assets/Editor/AIAssistant/Settings/" (wrong location)
+    - Namespace "UnityEditor.AIAssistant" extends Unity namespace (ASSET STORE VIOLATION)
+    - Confusing hybrid categorization: tag > folder > default priority (PrefabScanner.cs:380-401)
+    - No user control over categorization method
+
+  Files_To_Change:
+    - AIAssistantSettings.cs (namespace + default path + settings path constant + category mode)
+    - All 27 .cs files (namespace change from UnityEditor.AIAssistant)
+    - AIAssistantWindow.cs (MenuItem path)
+    - PrefabCategoryWindow.cs (MenuItem path + category mode UI)
+    - PrefabScanner.cs (categorization logic - remove hybrid, add binary choice)
+    - Folder structure (move everything to single root)
+
+Categorization_Mode_Design:
+  Problem: "Current hybrid priority (tag > folder > default) is confusing and unpredictable"
+
+  Solution: "Binary choice - user explicitly selects either folder-based OR tag-based categorization"
+
+  Category_Mode_Enum:
+    code: |
+      public enum CategoryMode
+      {
+          ByFolder,  // Use folder structure only (default)
+          ByTag      // Use Unity tags only
+      }
+
+  Behavior:
+    ByFolder_Mode:
+      description: "Categorize prefabs by their parent folder name"
+      example: "Assets/Prefabs/Vehicles/Car.prefab → 'Vehicles' category"
+      default: true
+      rationale: "Most intuitive, zero Unity tag setup required"
+
+    ByTag_Mode:
+      description: "Categorize prefabs by their Unity tag"
+      example: "Prefab with tag 'Enemy' → 'Enemy' category"
+      requires: "User must set Unity tags on prefabs"
+      untagged: "Prefabs without tags appear in 'Untagged' category"
+
+  Implementation:
+    GetPrefabCategory_New_Logic: |
+      private static string GetPrefabCategory(GameObject prefab, string assetPath, CategoryMode mode)
+      {
+          if (mode == CategoryMode.ByTag)
+          {
+              // Tag mode: ONLY use Unity tag
+              if (!string.IsNullOrEmpty(prefab.tag) && prefab.tag != "Untagged")
+                  return prefab.tag;
+              return "Untagged";
+          }
+          else // CategoryMode.ByFolder
+          {
+              // Folder mode: ONLY use folder name
+              string folderName = GetParentFolderName(assetPath);
+              if (!string.IsNullOrEmpty(folderName))
+                  return folderName;
+              return "Root";
+          }
+      }
+
+    note: "Clean if/else, no priority chains, no 'check this then that'"
+
+  UI_Changes:
+    location: "PrefabCategoryWindow - after header, before category list"
+    elements:
+      - "EnumPopup for CategoryMode selection"
+      - "Help box explaining current mode behavior"
+      - "Notification when mode changes (requires refresh)"
+
+  Settings_Addition:
+    file: "AIAssistantSettings.cs"
+    field: |
+      [Header("Categorization")]
+      [Tooltip("How to categorize prefabs: by folder structure or Unity tags")]
+      public CategoryMode CategoryMode = CategoryMode.ByFolder;
+
+New_Folder_Structure: |
+  Assets/
+    ContextAwareSceneBuilder/                    # Single root folder (Unity requirement)
+
+      Editor/                                     # Editor-only CODE
+        ContextAwareSceneBuilder/                 # Scripts with custom namespace
+          Actions/
+            IAction.cs
+            CreateRectangleAction.cs
+            CreateCircleAction.cs
+            InstantiatePrefabAction.cs
+            ModifyGameObjectAction.cs
+            DeleteGameObjectAction.cs
+            AddComponentAction.cs
+            RemoveComponentAction.cs
+
+          Models/
+            ActionPlan.cs
+            ActionResult.cs
+            PrefabMetadata.cs
+            PrefabRegistry.cs
+            ComponentMetadata.cs
+            FieldMetadata.cs
+            PrefabCategorySelection.cs
+
+          Utilities/
+            SimpleJSON.cs
+
+          AIAssistantWindow.cs
+          AIAssistantSettings.cs
+          OpenAIClient.cs
+          ContextBuilder.cs
+          DynamicToolGenerator.cs
+          DynamicPlanApplier.cs
+          PlanApplier.cs
+          PrefabScanner.cs
+          PrefabRegistryCache.cs
+          PrefabCategoryPersistence.cs
+          PrefabCategoryWindow.cs
+          ProjectIndexer.cs
+
+      Settings/                                   # Settings assets (NOT under Editor/)
+        AIAssistantSettings.asset                 # Default settings instance (ScriptableObject)
+
+      Examples/                                   # Demonstration content
+        Prefabs/                                  # Example prefabs for demo
+          Primitives/
+            Cube_Example.prefab                   # No Unity tag (uses folder name)
+            Sphere_Example.prefab                 # No Unity tag (uses folder name)
+            Cylinder_Example.prefab               # No Unity tag (uses folder name)
+            Capsule_Example.prefab                # No Unity tag (uses folder name)
+          Props/
+            Crate_Example.prefab                  # No Unity tag (uses folder name, has Rigidbody)
+
+        Scenes/
+          ExampleScene.unity                      # Pre-configured demo scene
+
+        Materials/                                # Materials for example prefabs
+          Blue_Mat.mat
+          Red_Mat.mat
+          Green_Mat.mat
+          Yellow_Mat.mat
+          Wood_Mat.mat
+
+        README.txt                                # Explains examples can be deleted
+
+      Documentation/
+        README.pdf                                # Main documentation
+        QuickStart.pdf                            # 5-minute getting started guide
+        UserGuide.pdf                             # Comprehensive guide
+        LICENSE.txt                               # Asset license
+        CHANGELOG.txt                             # Version history
+        CREDITS.txt                               # Third-party credits (SimpleJSON)
+
+Note_On_Settings_Location:
+  rationale: "Settings/ is at package root, NOT under Editor/ folder"
+  reason: "ScriptableObject assets must be outside Editor folder to be serialized properly"
+  user_modification: "Users edit the shipped settings asset directly - API key in EditorPrefs, other settings in asset"
+  updates: "On asset updates, settings file might be overwritten - EditorPrefs API key persists"
+
+Namespace_Change:
+  Current: "UnityEditor.AIAssistant"
+  Problem: "Extends Unity's reserved UnityEditor namespace (ASSET STORE VIOLATION)"
+
+  New: "ContextAwareSceneBuilder.Editor"
+
+  Rationale:
+    - User-declared namespace (required by Asset Store)
+    - Matches asset name for consistency
+    - Professional branding
+    - .Editor suffix clearly indicates editor-only code
+
+  Files_Requiring_Change: "ALL 27 .cs files"
+
+  Find_Replace:
+    - "namespace UnityEditor.AIAssistant" → "namespace ContextAwareSceneBuilder.Editor"
+    - "using UnityEditor.AIAssistant" → "using ContextAwareSceneBuilder.Editor"
+    - Keep "using UnityEditor;" for Unity's editor APIs
+
+Settings_Changes:
+  File: "AIAssistantSettings.cs"
+
+  Path_Constant_Fix:
+    line: 14
+    old: 'private const string SETTINGS_PATH = "Assets/Editor/AIAssistant/Settings/AIAssistantSettings.asset";'
+    new: 'private const string SETTINGS_PATH = "Assets/ContextAwareSceneBuilder/Settings/AIAssistantSettings.asset";'
+    note: "Settings/ is at package root, NOT under Editor/"
+
+  Default_Prefab_Folder:
+    line: 40
+    old: 'public string PrefabScanFolder = "Assets/AIPrefabs";'
+    new: 'public string PrefabScanFolder = "Assets/ContextAwareSceneBuilder/Examples/Prefabs";'
+    tooltip: "Folder containing prefabs to scan. Change this to your own prefabs folder when ready."
+
+Menu_Changes:
+  Current_Menus:
+    - "Window/AI Assistant"
+    - "Window/AI Assistant/Prefab Categories"
+
+  New_Menus:
+    - "Window/Context-Aware Scene Builder"
+    - "Window/Context-Aware Scene Builder/Prefab Categories"
+
+  Files_To_Update:
+    - AIAssistantWindow.cs (MenuItem attribute)
+    - PrefabCategoryWindow.cs (MenuItem attribute)
+
+  Note: "Name is descriptive and clear, though longer than typical Unity menu names"
+
+Example_Prefabs_Specification:
+  Purpose: "Minimal set demonstrating tool functionality, not production assets"
+  Philosophy: "Users buy this for THEIR prefabs - examples just prove it works"
+  Categorization: "Examples use FOLDER structure (default ByFolder mode) - NO Unity tags needed"
+
+  Primitives_Category:
+    Folder: "Examples/Prefabs/Primitives/"
+    Category_Derived_From: "Folder name 'Primitives'"
+    Prefabs:
+      - Cube_Example.prefab:
+          GameObject: Unity primitive cube (GameObject.CreatePrimitive)
+          Material: Blue_Mat (simple unlit blue)
+          Unity_Tag: "Untagged" (default - not used for categorization)
+          Scale: (1, 1, 1)
+          Components: [MeshFilter, MeshRenderer, BoxCollider]
+
+      - Sphere_Example.prefab:
+          GameObject: Unity primitive sphere
+          Material: Red_Mat (simple unlit red)
+          Unity_Tag: "Untagged" (default - not used for categorization)
+          Scale: (1, 1, 1)
+          Components: [MeshFilter, MeshRenderer, SphereCollider]
+
+      - Cylinder_Example.prefab:
+          GameObject: Unity primitive cylinder
+          Material: Green_Mat (simple unlit green)
+          Unity_Tag: "Untagged" (default - not used for categorization)
+          Scale: (1, 1, 1)
+          Components: [MeshFilter, MeshRenderer, CapsuleCollider]
+
+      - Capsule_Example.prefab:
+          GameObject: Unity primitive capsule
+          Material: Yellow_Mat (simple unlit yellow)
+          Unity_Tag: "Untagged" (default - not used for categorization)
+          Scale: (1, 1, 1)
+          Components: [MeshFilter, MeshRenderer, CapsuleCollider]
+
+  Props_Category:
+    Folder: "Examples/Prefabs/Props/"
+    Category_Derived_From: "Folder name 'Props'"
+    Prefabs:
+      - Crate_Example.prefab:
+          GameObject: Scaled cube (0.5, 0.5, 0.5)
+          Material: Wood_Mat (brown unlit or standard)
+          Unity_Tag: "Untagged" (default - not used for categorization)
+          Components: [MeshFilter, MeshRenderer, BoxCollider, Rigidbody]
+          Rigidbody_Settings: {mass: 10, drag: 0.5}
+          Purpose: "Shows physics-enabled object + component parameters for addComponent demo"
+
+  Materials:
+    - All materials are simple Unlit or Standard shader
+    - No textures needed (solid colors)
+    - Keeps package size minimal
+
+  Rationale:
+    - Use Unity built-in primitives (no custom models needed)
+    - Simple materials (no complex textures)
+    - Demonstrates both static and physics objects
+    - Shows folder-based categorization (default mode - zero setup)
+    - Crate shows Rigidbody parameters for addComponent demo
+    - Total: 5 prefabs (minimal but functional)
+    - Users can switch to tag mode later if they prefer
+
+Example_Scene_Specification:
+  File: "Assets/ContextAwareSceneBuilder/Examples/Scenes/ExampleScene.unity"
+
+  Contents:
+    - Main Camera (default position 0, 1, -10)
+    - Directional Light (default rotation)
+    - Ground plane (10x10 scaled cube at y=-0.5 for reference)
+    - Example objects in scene:
+        - One Cube_Example at (0, 0, 0)
+        - One Sphere_Example at (2, 0.5, 0)
+        - One Crate_Example at (-2, 1, 0)
+
+  Purpose:
+    - Shows tool in action immediately
+    - User can open Window → Context-Aware Scene Builder → Works immediately
+    - Can try: "create a cylinder at 5, 0, 0" → Success
+    - Visual confirmation that tool works
+
+  Important_Auto_Scan_Logic:
+    problem: "ProjectSettings/Artifacts/PrefabRegistry.json won't ship with package (in .gitignore)"
+    solution: "Auto-scan on first window open if registry missing or empty"
+
+    implementation:
+      file: "AIAssistantWindow.cs"
+      location: "OnEnable() or first OnGUI() call"
+      logic: |
+        if (PrefabRegistry doesn't exist OR is empty)
+        {
+            if (PrefabScanFolder contains "Examples")
+            {
+                // Auto-scan examples on first run
+                PrefabScanner.ScanPrefabs(settings.PrefabScanFolder);
+                ShowNotification("Scanned example prefabs. Ready to try!");
+            }
+        }
+
+    rationale: "User imports package → Opens example scene → Opens window → Auto-scans → Ready immediately"
+
+Documentation_README_Example: |
+  # Context-Aware Scene Builder
+
+  Build Unity scenes through natural conversation with AI.
+
+  ## Quick Start (5 minutes)
+
+  1. Open **Window → Context-Aware Scene Builder**
+  2. Enter your OpenAI API key in Settings (get one at platform.openai.com)
+  3. Try the examples:
+     - "create a sphere at 3, 0, 0"
+     - "create a crate with a rigidbody"
+     - "move the sphere to 5, 2, 0"
+     - "add a BoxCollider to the cube"
+
+  ## Using Your Own Prefabs (10 minutes)
+
+  ### Option 1: Organize by Folders (Recommended - Default)
+  1. Organize your prefabs into folders by category:
+     - Example: `Assets/MyGame/Prefabs/Vehicles/`
+     - Example: `Assets/MyGame/Prefabs/Characters/`
+     - Example: `Assets/MyGame/Prefabs/Props/`
+  2. Open Settings: Window → Context-Aware Scene Builder → Click settings icon
+  3. Change **Prefab Scan Folder** to your prefabs folder: `Assets/MyGame/Prefabs`
+  4. Click **Scan Prefabs** in the main window
+  5. Select which categories to use (Window → Context-Aware Scene Builder → Prefab Categories)
+  6. Start creating!
+
+  ### Option 2: Use Unity Tags (Advanced)
+  1. Set Unity tags on your prefabs (Edit → Project Settings → Tags and Layers)
+  2. Open Window → Context-Aware Scene Builder → Prefab Categories
+  3. Change **Categorization Mode** to "By Tag"
+  4. Click **Refresh Prefabs**
+  5. Select which tag categories to use
+  6. Start creating!
+
+  ## About the Examples
+
+  The `Assets/ContextAwareSceneBuilder/Examples/` folder contains:
+  - 5 simple prefabs for demonstration
+  - An example scene showing the tool in action
+  - Basic materials
+
+  **You can safely delete the Examples folder** once you're using your own prefabs.
+
+  ## Features
+
+  - Create prefabs through conversation
+  - Modify objects (position, rotation, scale, properties)
+  - Add/remove components dynamically
+  - Delete objects
+  - Context-aware: AI understands your scene and available prefabs
+  - Undo/Redo support (Ctrl+Z)
+
+  ## Requirements
+
+  - Unity 2021.3 or newer
+  - OpenAI API key (costs apply - approximately $0.01-0.10 per request depending on model)
+  - Prefabs organized in folders OR with Unity tags
+
+  ## Support
+
+  Documentation: See Documentation/ folder
+  Issues: [Your support email/link]
+
+Settings_UI_Improvements:
+  File: "AIAssistantSettings.cs + AIAssistantSettingsEditor.cs"
+
+  New_Help_Box:
+    location: "In custom editor, after default inspector, before Prefab Scanning section"
+    condition: 'settings.PrefabScanFolder.Contains("Examples")'
+    content: |
+      ⚠️ Currently using example prefabs for demonstration.
+
+      To use your own prefabs:
+      1. Change 'Prefab Scan Folder' below to your prefabs location
+         (e.g., Assets/MyGame/Prefabs)
+      2. Click 'Scan Prefabs' in the main window
+      3. Select categories: Window → Context-Aware Scene Builder → Prefab Categories
+
+      Common locations:
+      - Assets/Prefabs
+      - Assets/[YourGame]/Prefabs
+      - Assets/[AssetPackName]/Prefabs
+
+      You can delete the Examples folder once you're using your own prefabs.
+    message_type: "MessageType.Warning"
+    color: "Yellow background"
+
+Migration_Path_For_Existing_Users:
+  Problem: "Current dev setup has Assets/AIPrefabs/ and Assets/SimpleNaturePack/"
+  Solution: "Manual migration (acceptable since pre-release, no public users yet)"
+
+  Steps_For_Developer:
+    1: "Note current prefabs locations (Assets/AIPrefabs/branches, rocks)"
+    2: "Commit current work"
+    3: "Perform namespace change and folder restructure (Phases 1-2)"
+    4: "Test compilation"
+    5: "Create example prefabs (Phase 3)"
+    6: "Update settings path to Assets/AIPrefabs if still using old prefabs"
+    7: "OR move AIPrefabs content to new Examples folder for testing"
+    8: "Rescan prefabs"
+    9: "Test tool functionality"
+
+  Note: "Not a concern for Asset Store users (fresh imports only)"
+
+License_And_Credits:
+  License:
+    type: "Unity Asset Store EULA (Standard)"
+    rationale: "Standard for paid Asset Store assets - covers commercial use, redistribution restrictions"
+    file: "LICENSE.txt"
+    content: |
+      Context-Aware Scene Builder
+      Copyright (c) 2025 [Your Name/Company]
+
+      This asset is licensed under the Unity Asset Store EULA.
+      https://unity.com/legal/as-terms
+
+      You may use this asset in your Unity projects (personal or commercial).
+      You may NOT redistribute, resell, or share this asset.
+
+      Third-party components are subject to their own licenses (see CREDITS.txt).
+
+  Credits:
+    file: "CREDITS.txt"
+    content: |
+      Context-Aware Scene Builder uses the following third-party components:
+
+      SimpleJSON
+      - Author: Bunny83
+      - License: MIT-like (permissive)
+      - Location: Editor/ContextAwareSceneBuilder/Utilities/SimpleJSON.cs
+      - Source: https://wiki.unity3d.com/index.php/SimpleJSON
+
+      OpenAI API
+      - This tool requires an OpenAI API key (not included)
+      - OpenAI API usage subject to OpenAI terms: https://openai.com/policies/terms-of-use
+      - API costs apply based on usage
+
+  Privacy_Disclosure:
+    file: "README.pdf and in-tool warning"
+    content: |
+      DATA TRANSMISSION NOTICE:
+      This tool sends data to OpenAI's servers, including:
+      - Your scene structure and object names
+      - Your project metadata
+      - Your natural language prompts
+
+      Your API key is stored locally in Unity EditorPrefs (not transmitted to us).
+      Please review OpenAI's privacy policy before use.
+
+Implementation_Phases:
+  Phase_1_Namespace_Change:
+    description: "Fix critical Asset Store violation"
+    priority: "CRITICAL"
+
+    tasks:
+      - "Find-replace 'namespace UnityEditor.AIAssistant' → 'namespace ContextAwareSceneBuilder.Editor' (27 files)"
+      - "Find-replace 'using UnityEditor.AIAssistant' → 'using ContextAwareSceneBuilder.Editor'"
+      - "Update MenuItem in AIAssistantWindow.cs: 'Window/Context-Aware Scene Builder'"
+      - "Update MenuItem in PrefabCategoryWindow.cs: 'Window/Context-Aware Scene Builder/Prefab Categories'"
+      - "Test compilation"
+
+    verification:
+      - "No compiler errors"
+      - "Grep for 'UnityEditor.AIAssistant' returns zero results (except in this architecture doc)"
+      - "All windows appear in 'Window/Context-Aware Scene Builder' menu"
+      - "Tool opens and functions normally"
+
+  Phase_2_Folder_Restructure:
+    description: "Move to single root folder structure"
+    priority: "HIGH"
+
+    tasks:
+      - "Create Assets/ContextAwareSceneBuilder/ root folder"
+      - "Create Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/ for scripts"
+      - "Create Assets/ContextAwareSceneBuilder/Settings/ folder"
+      - "Move all .cs files to Editor/ContextAwareSceneBuilder/"
+      - "Update SETTINGS_PATH constant in AIAssistantSettings.cs to 'Assets/ContextAwareSceneBuilder/Settings/AIAssistantSettings.asset'"
+      - "Update PrefabScanFolder default to 'Assets/ContextAwareSceneBuilder/Examples/Prefabs'"
+      - "Create new settings asset at new location"
+      - "Delete old Assets/Editor/AIAssistant/ folder"
+      - "Update .gitignore if needed"
+
+    verification:
+      - "Tool opens without errors"
+      - "Settings load/save correctly at new location"
+      - "No broken file references"
+      - "Scan prefabs works (even if no prefabs yet)"
+
+  Phase_3_Example_Content:
+    description: "Create example prefabs and scene"
+    priority: "HIGH"
+
+    tasks:
+      - "Create folder: Assets/ContextAwareSceneBuilder/Examples/Prefabs/Primitives/"
+      - "Create folder: Assets/ContextAwareSceneBuilder/Examples/Prefabs/Props/"
+      - "Create folder: Assets/ContextAwareSceneBuilder/Examples/Materials/"
+      - "Create 5 simple materials (Blue_Mat, Red_Mat, Green_Mat, Yellow_Mat, Wood_Mat)"
+      - "Create Cube_Example.prefab (blue, NO Unity tag - uses folder 'Primitives')"
+      - "Create Sphere_Example.prefab (red, NO Unity tag - uses folder 'Primitives')"
+      - "Create Cylinder_Example.prefab (green, NO Unity tag - uses folder 'Primitives')"
+      - "Create Capsule_Example.prefab (yellow, NO Unity tag - uses folder 'Primitives')"
+      - "Create Crate_Example.prefab (brown, NO Unity tag - uses folder 'Props', has Rigidbody)"
+      - "Create ExampleScene.unity with camera, light, ground, 3 example objects"
+      - "Add Examples/README.txt explaining examples can be deleted"
+      - "Add auto-scan logic to AIAssistantWindow.cs (OnEnable)"
+
+    auto_scan_logic:
+      file: "AIAssistantWindow.cs"
+      method: "OnEnable() or first frame of OnGUI()"
+      code: |
+        // Check if registry is missing or empty
+        var registry = PrefabRegistryCache.Load();
+        if (registry == null || registry.prefabs == null || registry.prefabs.Count == 0)
+        {
+            // Check if we're using example prefabs path
+            if (_settings.PrefabScanFolder.Contains("Examples"))
+            {
+                // Auto-scan examples with current category mode
+                PrefabScanner.ScanPrefabs(_settings.PrefabScanFolder,
+                    Path.Combine(ProjectIndexer.PROJECT_ARTIFACTS, "PrefabRegistry.json"),
+                    _settings.CategoryMode);
+
+                AppendLog("[System] Auto-scanned example prefabs. Change path in Settings to use your own.", LogType.Log);
+            }
+        }
+
+    verification:
+      - "Open ExampleScene → No errors"
+      - "Window → Context-Aware Scene Builder → Opens successfully"
+      - "Auto-scan runs on first open (check log)"
+      - "Window → Prefab Categories → Shows 'Primitive' and 'Prop'"
+      - "Try: 'create a sphere at 0, 1, 0' → Works"
+      - "Try: 'create a crate with position 3, 1, 0' → Works"
+
+  Phase_4_Categorization_Mode:
+    description: "Replace hybrid priority with binary categorization choice"
+    priority: "MEDIUM"
+
+    tasks:
+      - "Add CategoryMode enum to AIAssistantSettings.cs"
+      - "Add CategoryMode field (default: ByFolder) to AIAssistantSettings.cs"
+      - "Rewrite PrefabScanner.GetPrefabCategory() with if/else (remove priority chain)"
+      - "Add mode parameter to GetPrefabCategory(prefab, path, mode)"
+      - "Update ScanPrefabs() to accept and pass mode parameter"
+      - "Update ScanAll() to load settings and pass mode"
+      - "Add mode selector UI to PrefabCategoryWindow (EnumPopup + help box)"
+      - "Show notification when mode changes"
+
+    verification:
+      - "Set mode to ByFolder → Scan → Categories match folder names"
+      - "Set mode to ByTag → Scan → Categories match Unity tags"
+      - "Untagged prefabs appear in 'Untagged' category in tag mode"
+      - "Root-level prefabs appear in 'Root' category in folder mode"
+      - "No hybrid behavior - strictly one mode or the other"
+
+  Phase_5_Settings_UI_Enhancement:
+    description: "Add guidance in settings editor"
+    priority: "MEDIUM"
+
+    tasks:
+      - "Update AIAssistantSettingsEditor.OnInspectorGUI()"
+      - "Add conditional help box when using Examples folder"
+      - "Add visual warning indicator"
+      - "Update tooltips on PrefabScanFolder field"
+
+    verification:
+      - "Open Settings asset inspector"
+      - "See warning help box about example prefabs"
+      - "Instructions clear and actionable"
+
+  Phase_6_Documentation:
+    description: "Create professional documentation"
+    priority: "HIGH (before Asset Store submission)"
+
+    tasks:
+      - "Create Documentation/ folder"
+      - "Write README.pdf with Quick Start, Features, Requirements"
+      - "Create QuickStart.pdf (visual guide with screenshots)"
+      - "Write comprehensive UserGuide.pdf (setup, features, troubleshooting, API costs)"
+      - "Write LICENSE.txt (Unity Asset Store EULA)"
+      - "Write CREDITS.txt (SimpleJSON, OpenAI attribution)"
+      - "Create CHANGELOG.txt (v1.0.0 initial release)"
+      - "Add data transmission disclosure to README"
+
+    verification:
+      - "All documentation reviewed for clarity and accuracy"
+      - "Screenshots show correct UI (post-restructure)"
+      - "No broken links or references"
+      - "Privacy/security disclosures included"
+      - "Spelling and grammar checked"
+
+Testing_Checklist:
+  Fresh_Import_Test:
+    - "Create new empty Unity project (2021.3 LTS)"
+    - "Import package (.unitypackage)"
+    - "Verify Assets/ContextAwareSceneBuilder/ structure is correct"
+    - "Open ExampleScene"
+    - "Verify no errors in console"
+    - "Open Window → Context-Aware Scene Builder"
+    - "Verify auto-scan message appears"
+    - "Configure API key in settings"
+    - "Try: 'create a sphere at 0, 1, 0'"
+    - "Verify sphere created successfully"
+
+  Migration_To_Own_Prefabs_Test:
+    Folder_Mode_Test:
+      - "Create Assets/TestPrefabs/TestCategory/ folder"
+      - "Create test prefab in TestCategory folder"
+      - "Open Settings asset"
+      - "Change PrefabScanFolder to 'Assets/TestPrefabs'"
+      - "Ensure CategoryMode is 'ByFolder' (default)"
+      - "Click 'Scan Prefabs' in main window"
+      - "Open Window → Prefab Categories"
+      - "Verify 'TestCategory' appears"
+      - "Select 'TestCategory'"
+      - "Try creating test prefab via AI"
+      - "Verify success"
+
+    Tag_Mode_Test:
+      - "Create test prefab with Unity tag 'TagTest'"
+      - "Open Window → Prefab Categories"
+      - "Change CategoryMode to 'ByTag'"
+      - "Click 'Refresh Prefabs'"
+      - "Verify 'TagTest' appears in categories"
+      - "Select 'TagTest'"
+      - "Try creating test prefab via AI"
+      - "Verify success"
+
+  Delete_Examples_Test:
+    - "After migration test, delete Examples folder entirely"
+    - "Verify tool still works with user prefabs"
+    - "Verify no broken references or console errors"
+    - "Verify settings still load correctly"
+
+  Component_Management_Test:
+    - "Create a cube via AI"
+    - "Try: 'add a rigidbody to the cube'"
+    - "Verify component added"
+    - "Try: 'remove the box collider from the cube'"
+    - "Verify component removed"
+    - "Test Undo (Ctrl+Z) after each operation"
+
+  Unity_Version_Test:
+    - "Test on Unity 2021.3 LTS (minimum supported)"
+    - "Test on Unity 2022.3 LTS"
+    - "Test on Unity 2023.3 or Unity 6"
+    - "Verify no version-specific errors"
+
+Asset_Store_Compliance_Checklist:
+  Technical_Requirements:
+    - "✓ Unity 2021.3+ compatibility"
+    - "✓ Custom namespace (ContextAwareSceneBuilder.Editor)"
+    - "✓ Single root folder (Assets/ContextAwareSceneBuilder/)"
+    - "✓ File paths under 140 characters"
+    - "✓ No executables (.exe, .apk)"
+    - "✓ No DRM or registration"
+    - "✓ No watermarks"
+    - "✓ Menu placement under Window/"
+
+  Content_Quality:
+    - "✓ Professional code structure"
+    - "✓ Consistent naming conventions"
+    - "✓ XML documentation comments"
+    - "✓ Demo scene included and functional"
+    - "✓ No excessive spelling/grammar errors"
+
+  Documentation:
+    - "✓ Comprehensive README.pdf"
+    - "✓ Quick start guide"
+    - "✓ Setup instructions"
+    - "✓ LICENSE.txt included"
+    - "✓ CREDITS.txt for third-party components"
+    - "✓ CHANGELOG.txt"
+
+  Legal_And_Disclosure:
+    - "✓ Compatible license (Unity Asset Store EULA)"
+    - "✓ Third-party licenses disclosed (SimpleJSON)"
+    - "✓ API costs clearly disclosed"
+    - "✓ Data transmission notice"
+    - "✓ OpenAI terms referenced"
+
+Notes_And_Considerations:
+  Settings_Asset_Updates:
+    concern: "On asset updates, AIAssistantSettings.asset might be overwritten"
+    mitigation: "API key stored in EditorPrefs (persists across updates)"
+    user_impact: "Other settings (model, reasoning effort) might reset to defaults"
+    acceptable: "Standard behavior for Unity assets - document in update notes"
+
+  Example_Content_Philosophy:
+    - "Keep it minimal - 5 prefabs is enough to demonstrate"
+    - "Users understand they need their own prefabs for real work"
+    - "Examples prove the tool works without bloating the package"
+    - "Can always add more examples in future updates if requested"
+
+  Branding_Consistency:
+    product_name: "Context-Aware Scene Builder" (marketing, with hyphens)
+    namespace: "ContextAwareSceneBuilder" (code, no hyphens)
+    folder: "ContextAwareSceneBuilder" (filesystem, no hyphens)
+    rationale: "Standard practice - hyphens in display name, camelCase in code"
+
+  SimpleJSON_License:
+    - MIT-like permissive license (compatible with Asset Store)
+    - Must credit in CREDITS.txt
+    - No restrictions on commercial use
+    - Widely used in Unity community
+
+Future_Considerations:
+  - "Add first-run setup wizard (Phase 6, post-v1.0)"
+  - "Add 'Test API Connection' button in settings"
+  - "Add cost estimator for API usage"
+  - "Support multiple prefab folders"
+  - "Export/import prefab configurations"
+  - "Pro version with advanced features"

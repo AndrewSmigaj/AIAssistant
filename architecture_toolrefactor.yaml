@@ -1,0 +1,1452 @@
+architecture_version: "1.2"
+document_type: "Architecture Specification"
+title: "Single-Tool Batch Architecture Refactor"
+date: "2025-01-26"
+status: "Revised - Added Bounds Metadata for Spatial Reasoning"
+revision_notes: |
+  v1.2: Added bounds metadata (size + centerOffset) to solve pivot/center confusion
+  - GPT-5 can now understand object dimensions and pivot-to-center offset
+  - Enables accurate spatial placement (walls, furniture with non-centered pivots)
+  - Phase 0 added: Bounds calculation during prefab scanning
+  - All subsequent phases renumbered
+
+  v1.1: Fixed critical issue with tool output submission
+  - Added output aggregation logic to handle single callId for batch
+  - Clarified that individual actions created but outputs grouped
+  - Maintains existing checkbox UI compatibility
+
+# ============================================================================
+# OVERVIEW
+# ============================================================================
+
+overview:
+  purpose: |
+    Refactor from per-prefab tools (hundreds of tool schemas) to a single
+    batch tool that accepts arrays of objects. Drastically reduces API overhead,
+    token usage, and enables GPT-5 to reason about entire scenes holistically.
+
+  current_problems:
+    - One tool per prefab type (could be 100+ tools in schema)
+    - Each object instantiation = separate tool call
+    - Creating 20 objects = 20 tool calls = slow, expensive, poor UX
+    - Scale parameters always provided even when optional
+    - Massive token overhead from tool schemas
+    - GPT-5 confuses pivot point vs visual center, causing misplaced objects (walls half-buried, furniture floating)
+
+  proposed_solution:
+    - Single `instantiateObjects` tool accepting object array
+    - Prefab catalog provided as JSON context (not tool schemas)
+    - One tool call creates entire scene
+    - Existing approval UI (checkboxes) preserved
+    - Scale truly optional (no schema pressure)
+
+  benefits:
+    token_savings: "90%+ reduction in tool schema tokens"
+    performance: "10-100x fewer API calls"
+    ux: "Faster responses, better spatial reasoning from GPT-5"
+    architecture: "Cleaner, more maintainable codebase"
+    extensibility: "Add prefabs without code changes"
+    spatial_reasoning: "Bounds metadata enables accurate placement (pivot vs center, object dimensions)"
+
+# ============================================================================
+# ARCHITECTURE DESIGN
+# ============================================================================
+
+new_architecture:
+
+  tool_definition:
+    name: "instantiateObjects"
+    description: "Create multiple game objects in a single batch operation"
+    parameters:
+      type: "object"
+      properties:
+        objects:
+          type: "array"
+          description: "Array of objects to instantiate"
+          items:
+            type: "object"
+            properties:
+              prefabPath:
+                type: "string"
+                description: "AssetDatabase path from prefab catalog"
+                required: true
+                example: "Assets/Furniture/Chair_01.prefab"
+
+              name:
+                type: "string"
+                description: "GameObject instance name"
+                required: true
+                example: "DiningChair1"
+
+              position:
+                type: "object"
+                required: true
+                properties:
+                  x: {type: "number"}
+                  y: {type: "number"}
+                  z: {type: "number"}
+
+              rotation:
+                type: "object"
+                required: false
+                description: "Euler angles in degrees. Optional, defaults to (0,0,0)"
+                properties:
+                  x: {type: "number", default: 0}
+                  y: {type: "number", default: 0}
+                  z: {type: "number", default: 0}
+
+              scale:
+                type: "object"
+                required: false
+                description: "Local scale. Optional - if omitted, preserves prefab's default scale"
+                properties:
+                  x: {type: "number"}
+                  y: {type: "number"}
+                  z: {type: "number"}
+
+              parameters:
+                type: "object"
+                required: false
+                description: |
+                  Component parameter overrides. Use 'ComponentType_fieldName' format.
+                  Example: {"Rigidbody_mass": 10, "MeshRenderer_enabled": true}
+                additionalProperties: true
+
+  prefab_catalog_json_structure:
+    description: |
+      Prefab catalog provided in context as JSON. Includes all scannable
+      parameters so GPT-5 knows what can be customized.
+
+    format: |
+      {
+        "prefabs": [
+          {
+            "path": "Assets/Furniture/Chair_01.prefab",
+            "name": "Chair_01",
+            "description": "Wooden dining chair with physics",
+            "size": {"x": 0.5, "y": 0.9, "z": 0.5},
+            "centerOffset": {"x": 0, "y": 0.45, "z": 0},
+            "components": [
+              {
+                "type": "Rigidbody",
+                "parameters": {
+                  "mass": {
+                    "type": "number",
+                    "default": 5.0,
+                    "description": "Physics mass in kilograms"
+                  },
+                  "useGravity": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable gravity"
+                  }
+                }
+              },
+              {
+                "type": "MeshRenderer",
+                "parameters": {
+                  "enabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Render visibility"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+
+    design_rationale:
+      grouped_by_component: "GPT-5 understands 'Rigidbody has mass property'"
+      includes_types: "Helps GPT-5 provide correct value types"
+      shows_defaults: "GPT-5 knows normal values, can detect when to override"
+      compact: "Only essential metadata, optimized for token efficiency"
+      size: "GPT-5 understands object dimensions for spatial fit reasoning"
+      centerOffset: "GPT-5 can calculate visual center from pivot position (visualCenter = position + centerOffset)"
+
+  execution_flow:
+    step_1_prompt:
+      user: "Create a dining room with table and 4 chairs"
+
+    step_2_gpt5_planning:
+      description: "GPT-5 reads catalog, plans layout, single tool call"
+      tool_call:
+        name: "instantiateObjects"
+        arguments:
+          objects:
+            - prefabPath: "Assets/Furniture/Table_01.prefab"
+              name: "DiningTable"
+              position: {x: 0, y: 0, z: 0}
+            - prefabPath: "Assets/Furniture/Chair_01.prefab"
+              name: "Chair_North"
+              position: {x: 0, y: 0, z: -1.5}
+              rotation: {x: 0, y: 0, z: 0}
+            - prefabPath: "Assets/Furniture/Chair_01.prefab"
+              name: "Chair_South"
+              position: {x: 0, y: 0, z: 1.5}
+              rotation: {x: 0, y: 180, z: 0}
+            # ... 2 more chairs
+
+    step_3_parsing:
+      file: "OpenAIClient.cs"
+      method: "ParseInstantiateObjectsAction()"
+      output: "List<InstantiatePrefabAction>"
+      description: |
+        Parse objects array, create one InstantiatePrefabAction per object.
+        CRITICAL: All actions share the SAME callId from the batch tool call.
+        Extract prefabPath, name, position, optional rotation/scale/parameters.
+        Each action gets: callId = "call_abc123" (shared)
+
+    step_4_approval_ui:
+      file: "AIAssistantWindow.cs"
+      description: "Existing checkbox UI shows all 5 objects"
+      user_action: "Review, uncheck Chair_South, click Execute Selected"
+      note: "UI works unchanged - just shows individual actions with checkboxes"
+
+    step_5_execution:
+      file: "DynamicPlanApplier.cs"
+      method: "ApplyPlan(List<IAction>)"
+      description: "Execute selected 4 actions (table + 3 chairs)"
+      output: "List<ActionResult> with instanceIds"
+      note: |
+        Returns 4 ActionResult objects (Chair_South was not selected).
+        All 4 have action.callId = "call_abc123" (same callId).
+
+    step_6_output_aggregation:
+      description: "CRITICAL: Aggregate results by callId before submitting"
+      file: "OpenAIClient.cs or AIAssistantWindow.cs"
+      new_logic: |
+        Group ActionResults by callId.
+        For callId "call_abc123":
+          - Collect all 4 results
+          - Build JSON array: [
+              {"name": "DiningTable", "status": "success", "instanceId": 12345},
+              {"name": "Chair_North", "status": "success", "instanceId": 12346},
+              {"name": "Chair_East", "status": "success", "instanceId": 12347},
+              {"name": "Chair_West", "status": "success", "instanceId": 12348}
+            ]
+          - Submit single tool output with this array as "output" field
+
+      openai_format: |
+        {
+          "type": "function_call_output",
+          "call_id": "call_abc123",
+          "output": "[{\"name\":\"DiningTable\",\"status\":\"success\",\"instanceId\":12345},{\"name\":\"Chair_North\",\"status\":\"success\",\"instanceId\":12346}]"
+        }
+
+      note: |
+        Chair_South is NOT in the output because user unchecked it.
+        GPT-5 will see that 4 of 5 objects were created.
+        It can infer that one was rejected by the user or ask about it.
+
+# ============================================================================
+# IMPLEMENTATION PLAN
+# ============================================================================
+
+implementation:
+
+  phase_0_bounds_metadata:
+    description: "Add bounds metadata to prefab scanning for spatial reasoning"
+    priority: "CRITICAL - Solves pivot vs center confusion"
+
+    files_to_modify:
+      - file: "Models/PrefabMetadata.cs"
+        changes:
+          - "Add public Vector3 size field"
+          - "Add public Vector3 centerOffset field"
+
+      - file: "PrefabScanner.cs"
+        changes:
+          - "Update ScanPrefab() to temporarily instantiate prefabs"
+          - "Add CalculateBounds() helper method"
+          - "Calculate size and centerOffset from combined renderer/collider bounds"
+          - "Skip prefabs without Renderer or Collider"
+
+    implementation_details:
+      bounds_calculation_pseudocode: |
+        private static bool CalculateBounds(GameObject instance, out Vector3 size, out Vector3 centerOffset)
+        {
+            // Ensure consistent coordinate space
+            instance.transform.position = Vector3.zero;
+            instance.transform.rotation = Quaternion.identity;
+            instance.transform.localScale = Vector3.one;
+
+            // Try renderers first (includeInactive for LODs, hidden parts)
+            Renderer[] renderers = instance.GetComponentsInChildren<Renderer>(includeInactive: true);
+            if (renderers.Length > 0) {
+                Bounds combined = renderers[0].bounds;
+                for (int i = 1; i < renderers.Length; i++) {
+                    combined.Encapsulate(renderers[i].bounds);
+                }
+                size = combined.size;
+                centerOffset = combined.center - instance.transform.position;
+                return true;
+            }
+
+            // Fallback to colliders
+            Collider[] colliders = instance.GetComponentsInChildren<Collider>(includeInactive: true);
+            if (colliders.Length > 0) {
+                Bounds combined = colliders[0].bounds;
+                for (int i = 1; i < colliders.Length; i++) {
+                    combined.Encapsulate(colliders[i].bounds);
+                }
+                size = combined.size;
+                centerOffset = combined.center - instance.transform.position;
+                return true;
+            }
+
+            // No bounds available
+            size = Vector3.zero;
+            centerOffset = Vector3.zero;
+            return false;
+        }
+
+      scan_prefab_changes: |
+        private static PrefabMetadata ScanPrefab(string path, Dictionary<string, int> nameCounters)
+        {
+            GameObject prefabAsset = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+            if (prefabAsset == null) return null;
+
+            string category = GetPrefabCategory(prefabAsset, path);
+            if (string.IsNullOrEmpty(category)) return null;
+
+            // Temporarily instantiate to get accurate bounds
+            GameObject tempInstance = PrefabUtility.InstantiatePrefab(prefabAsset) as GameObject;
+            if (tempInstance == null) return null;
+
+            try {
+                // Calculate bounds
+                Vector3 size, centerOffset;
+                bool hasBounds = CalculateBounds(tempInstance, out size, out centerOffset);
+
+                if (!hasBounds) {
+                    Debug.LogWarning($"[AI Assistant] Skipping {prefabAsset.name} - no Renderer or Collider");
+                    return null;
+                }
+
+                // Scan components on temp instance
+                var components = tempInstance.GetComponents<MonoBehaviour>();
+                List<ComponentMetadata> componentMetas = new List<ComponentMetadata>();
+                foreach (var comp in components) {
+                    if (comp == null) continue;
+                    ComponentMetadata meta = ScanComponent(comp);
+                    if (meta != null && meta.fields.Length > 0) {
+                        componentMetas.Add(meta);
+                    }
+                }
+
+                string uniqueName = GenerateUniqueFunctionName(
+                    SanitizeName(prefabAsset.name),
+                    category,
+                    nameCounters
+                );
+
+                return new PrefabMetadata {
+                    prefabName = prefabAsset.name,
+                    prefabPath = path,
+                    prefabTag = category,
+                    uniqueFunctionName = uniqueName,
+                    size = size,
+                    centerOffset = centerOffset,
+                    components = componentMetas.ToArray()
+                };
+
+            } finally {
+                // CRITICAL: Always destroy temp instance
+                Object.DestroyImmediate(tempInstance);
+            }
+        }
+
+    rationale:
+      why_instantiate: "Renderer.bounds only valid for active scene objects, not prefab assets"
+      why_includeInactive: "Captures LOD systems, toggleable parts, hidden debug visualizations"
+      why_renderer_first: "Visual bounds more relevant than physics bounds for placement"
+      why_skip_invalid: "Cleaner than including prefabs with null bounds"
+
+    testing:
+      - test: "Scan prefab with centered pivot (sphere)"
+        verify: "centerOffset ≈ (0, 0, 0)"
+
+      - test: "Scan prefab with bottom pivot (wall)"
+        verify: "centerOffset.y ≈ size.y / 2"
+
+      - test: "Scan prefab with no renderer but has collider"
+        verify: "Uses collider bounds successfully"
+
+      - test: "Scan prefab with neither renderer nor collider"
+        verify: "Skipped with warning in console"
+
+  phase_1_primitive_prefabs:
+    description: "Create Unity primitive prefabs to replace fallback tools"
+    folder: "Assets/ContextAwareSceneBuilder/Examples/Prefabs/Primitives/"
+
+    prefabs_to_create:
+      - name: "Cube.prefab"
+        primitive_type: "PrimitiveType.Cube"
+        components: ["MeshFilter", "MeshRenderer", "BoxCollider"]
+
+      - name: "Sphere.prefab"
+        primitive_type: "PrimitiveType.Sphere"
+        components: ["MeshFilter", "MeshRenderer", "SphereCollider"]
+
+      - name: "Cylinder.prefab"
+        primitive_type: "PrimitiveType.Cylinder"
+        components: ["MeshFilter", "MeshRenderer", "CapsuleCollider"]
+
+      - name: "Plane.prefab"
+        primitive_type: "PrimitiveType.Plane"
+        components: ["MeshFilter", "MeshRenderer", "MeshCollider"]
+
+      - name: "Capsule.prefab"
+        primitive_type: "PrimitiveType.Capsule"
+        components: ["MeshFilter", "MeshRenderer", "CapsuleCollider"]
+
+    implementation_approach: |
+      Create editor script that uses PrefabUtility.CreatePrefab() with
+      GameObject.CreatePrimitive(). Run once to generate .prefab files,
+      then delete the generator script (or keep as utility).
+
+  phase_2_catalog_generator:
+    description: "Create JSON catalog generator from prefab registry"
+
+    new_file: "Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/PrefabCatalogGenerator.cs"
+
+    class_structure:
+      namespace: "ContextAwareSceneBuilder.Editor"
+      class_name: "PrefabCatalogGenerator"
+      methods:
+        - name: "GeneratePrefabCatalogJson"
+          parameters: ["List<PrefabMetadata> prefabs"]
+          returns: "string (JSON)"
+          description: |
+            Convert PrefabMetadata from registry to optimized JSON catalog.
+            For each prefab:
+              - Extract path, name, description
+              - Include size and centerOffset (from Phase 0)
+              - For each component:
+                - List all parameters with types, defaults, descriptions
+            Use System.Text.Json or SimpleJSON for serialization.
+
+    json_optimization:
+      - "Omit null/empty fields"
+      - "Use short keys where possible"
+      - "Group parameters by component"
+      - "Include only editable fields (skip read-only)"
+      - "Include size and centerOffset for spatial reasoning"
+
+  phase_3_tool_definition:
+    description: "Replace per-prefab tools with single batch tool"
+
+    file_to_modify: "DynamicToolGenerator.cs"
+
+    changes:
+      remove:
+        - "GenerateFunctionSchema() - per-prefab tool generation"
+        - "FALLBACK_TOOLS_JSON constant (rectangle/circle)"
+        - "Fallback tool inclusion logic"
+
+      add:
+        - method: "GenerateInstantiateObjectsTool()"
+          returns: "string (JSON tool schema)"
+          description: |
+            Generate schema for single instantiateObjects tool.
+            Schema includes object array parameter with prefabPath,
+            name, position (required), rotation/scale/parameters (optional).
+
+      update:
+        - method: "GenerateToolsJson()"
+          new_logic: |
+            Return array containing:
+            1. instantiateObjects tool
+            2. modifyGameObject tool (keep)
+            3. deleteGameObject tool (keep)
+            4. addComponent tool (keep)
+            5. removeComponent tool (keep)
+
+            Total: 5 tools instead of potentially hundreds
+
+  phase_4_parsing_logic:
+    description: "Update OpenAI response parsing for batch format"
+
+    file_to_modify: "OpenAIClient.cs"
+
+    changes:
+      remove:
+        - "ParsePrefabAction() - old per-prefab parsing"
+        - "ParseRectangleAction() - fallback tool"
+        - "ParseCircleAction() - fallback tool"
+        - "Per-prefab function name matching logic"
+
+      add:
+        - method: "ParseInstantiateObjectsAction()"
+          parameters: ["JSONNode args, string callId"]
+          returns: "List<InstantiatePrefabAction>"
+          pseudocode: |
+            List<InstantiatePrefabAction> actions = new List();
+
+            var objectsArray = args["objects"];
+            foreach (var obj in objectsArray) {
+              string prefabPath = obj["prefabPath"];
+              string name = obj["name"];
+              Vector3 position = ParseVector3(obj["position"]);
+
+              // Optional parameters
+              Vector3 rotation = obj["rotation"] != null
+                ? ParseVector3(obj["rotation"])
+                : Vector3.zero;
+
+              Vector3? scale = obj["scale"] != null
+                ? ParseVector3(obj["scale"])
+                : null;  // Preserve prefab default
+
+              Dictionary<string, object> parameters = ParseParameters(obj["parameters"]);
+
+              actions.Add(new InstantiatePrefabAction {
+                callId = callId,  // CRITICAL: All actions share same callId!
+                prefabPath = prefabPath,
+                name = name,
+                position = position,
+                rotation = rotation,
+                scale = scale,
+                parameters = parameters
+              });
+            }
+
+            return actions;
+
+          important_note: |
+            ALL actions from the batch get the SAME callId.
+            This is the tool call ID from the batch instantiateObjects call.
+            Later, when submitting tool outputs, we must aggregate by callId.
+
+      update:
+        - method: "ParseFunctionCallItem()"
+          change: |
+            Replace per-function switch with:
+
+            if (functionName == "instantiateObjects") {
+              var actions = ParseInstantiateObjectsAction(args, callId);
+              foreach (var action in actions) {
+                plan.Actions.Add(action);
+              }
+            }
+            else if (functionName == "modifyGameObject") { ... }
+            else if (functionName == "deleteGameObject") { ... }
+            // etc.
+
+  phase_5_context_builder:
+    description: "Add prefab catalog JSON to context pack"
+
+    file_to_modify: "ContextBuilder.cs"
+
+    changes:
+      update_method: "BuildContextPack()"
+      new_logic: |
+        1. Load PrefabRegistry
+        2. Filter prefabs by selected tags (if applicable)
+        3. Generate catalog JSON via PrefabCatalogGenerator
+        4. Build context structure:
+
+           # Scene Context
+           [Existing scene hierarchy, object list, etc.]
+
+           # Available Prefabs Catalog
+           [Prefab catalog JSON - comprehensive list with all parameters, size, centerOffset]
+
+           # Instructions
+           Use the instantiateObjects tool to create objects. Reference prefabs
+           by their 'path' field. Include position (required). Rotation and scale
+           are optional - omit scale to preserve prefab defaults. Use parameters
+           object to customize component properties (format: ComponentType_fieldName).
+
+           IMPORTANT - Positioning Semantics:
+           - Position parameters refer to the GameObject's PIVOT POINT (not visual center)
+           - Use 'size' field to understand object dimensions (width, height, depth)
+           - Use 'centerOffset' to calculate visual center: visualCenter = position + centerOffset
+           - Example: Wall with bottom pivot at Y=0 has centerOffset.y = size.y/2, so visual center is at Y=size.y/2
+
+           # Tools
+           [Tool schemas: instantiateObjects, modifyGameObject, deleteGameObject, etc.]
+
+        5. Estimate tokens, truncate catalog if exceeds budget
+           (prioritize most recently used prefabs, or user-selected categories)
+
+  phase_6_output_aggregation:
+    description: "CRITICAL: Implement output aggregation by callId"
+
+    problem: |
+      Current code (OpenAIClient.cs lines 119-157) submits one function_call_output
+      per ActionResult. This works when each action has unique callId.
+
+      With batch tool calls, multiple actions share one callId. OpenAI API
+      rejects duplicate callIds in tool outputs array.
+
+    solution: |
+      Group ActionResults by callId before building tool outputs.
+      For each unique callId, aggregate all results into a JSON array.
+
+    file_to_modify: "OpenAIClient.cs"
+    method_to_modify: "BuildRequestBody()"
+
+    implementation_pseudocode: |
+      if (toolOutputs != null && toolOutputs.Count > 0) {
+        // Group results by callId
+        var groupedByCallId = new Dictionary<string, List<ActionResult>>();
+
+        foreach (var result in toolOutputs) {
+          string callId = result.Action.GetCallId();
+          if (!groupedByCallId.ContainsKey(callId)) {
+            groupedByCallId[callId] = new List<ActionResult>();
+          }
+          groupedByCallId[callId].Add(result);
+        }
+
+        // Build outputs array - one entry per callId
+        var outputsJson = new StringBuilder();
+        outputsJson.Append("[\n");
+
+        int groupIndex = 0;
+        foreach (var kvp in groupedByCallId) {
+          string callId = kvp.Key;
+          List<ActionResult> results = kvp.Value;
+
+          // Build aggregated output for this callId
+          string outputContent;
+
+          if (results.Count == 1) {
+            // Single result - use existing format
+            var result = results[0];
+            if (result.Success) {
+              int instanceId = result.InstanceId.Value;
+              string objectName = result.CreatedObject != null ? result.CreatedObject.name : "unknown";
+              outputContent = $"{{\\\"status\\\": \\\"success\\\", \\\"instanceId\\\": {instanceId}, \\\"name\\\": \\\"{EscapeJsonString(objectName)}\\\"}}";
+            } else {
+              outputContent = $"{{\\\"status\\\": \\\"error\\\", \\\"message\\\": \\\"{EscapeJsonString(result.ErrorMessage)}\\\"}}";
+            }
+          } else {
+            // Multiple results from batch - build JSON array
+            var batchResults = new StringBuilder();
+            batchResults.Append("[");
+
+            for (int i = 0; i < results.Count; i++) {
+              var result = results[i];
+              if (result.Success) {
+                int instanceId = result.InstanceId.Value;
+                string objectName = result.CreatedObject != null ? result.CreatedObject.name : "unknown";
+                batchResults.Append($"{{\\\"name\\\": \\\"{EscapeJsonString(objectName)}\\\", \\\"status\\\": \\\"success\\\", \\\"instanceId\\\": {instanceId}}}");
+              } else {
+                batchResults.Append($"{{\\\"status\\\": \\\"error\\\", \\\"message\\\": \\\"{EscapeJsonString(result.ErrorMessage)}\\\"}}");
+              }
+
+              if (i < results.Count - 1) {
+                batchResults.Append(",");
+              }
+            }
+
+            batchResults.Append("]");
+            outputContent = batchResults.ToString();
+          }
+
+          outputsJson.Append($"    {{\"type\": \"function_call_output\", \"call_id\": \"{callId}\", \"output\": \"{outputContent}\"}}");
+
+          if (groupIndex < groupedByCallId.Count - 1) {
+            outputsJson.Append(",\n");
+          }
+          groupIndex++;
+        }
+
+        outputsJson.Append("\n  ]");
+        inputField = outputsJson.ToString();
+      }
+
+    key_changes:
+      - "Group ActionResults by callId first"
+      - "Single result: use existing format (backwards compatible)"
+      - "Multiple results: build JSON array of individual results"
+      - "One function_call_output per unique callId (not per ActionResult)"
+
+    backwards_compatibility: |
+      Non-batch tool calls (modifyGameObject, deleteGameObject, etc.) have
+      unique callIds, so they get single-result format. No change in behavior.
+
+      Batch instantiateObjects calls get multiple results aggregated into array.
+
+  phase_7_ui_verification:
+    description: "Verify checkbox UI works correctly with batch actions"
+
+    files_to_verify:
+      - file: "AIAssistantWindow.cs"
+        current_behavior: "Already handles List<IAction> for checkbox UI"
+        required_changes: "None - already compatible!"
+        verification: |
+          Batch of 5 objects creates 5 InstantiatePrefabAction objects.
+          UI shows 5 individual checkboxes.
+          User can select/deselect each one independently.
+          Only selected actions are executed.
+
+      - file: "DynamicPlanApplier.cs"
+        current_behavior: "Executes List<IAction>, returns List<ActionResult>"
+        required_changes: "None - already works correctly"
+        verification: |
+          Receives list of selected actions (e.g., 4 out of 5).
+          Executes each one independently.
+          Returns 4 ActionResult objects.
+          All share same callId (from batch tool call).
+
+  phase_8_cleanup:
+    description: "Remove deprecated code and tools"
+
+    files_to_delete:
+      - "Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/Actions/CreateRectangleAction.cs"
+      - "Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/Actions/CreateCircleAction.cs"
+
+    code_to_remove:
+      - file: "PlanApplier.cs"
+        remove: "CreateRectangleGameObject() method"
+        remove: "CreateCircleGameObject() method"
+
+      - file: "DynamicPlanApplier.cs"
+        remove: "Rectangle/circle action handling in ApplyPlan()"
+
+      - file: "OpenAIClient.cs"
+        remove: "FALLBACK_TOOLS_JSON constant"
+        remove: "Rectangle/circle parsing logic"
+
+    settings_to_update:
+      - file: "AIAssistantSettings.cs"
+        field: "PrefabScanFolder"
+        old_default: "Assets/ContextAwareSceneBuilder/Examples/Prefabs"
+        new_default: "Assets/ContextAwareSceneBuilder/Examples/Prefabs"
+        help_text: |
+          Update tooltip to mention primitives are included by default,
+          and user should add their own asset packs to this folder or
+          point to their location.
+
+# ============================================================================
+# DATA FLOW
+# ============================================================================
+
+data_flow:
+
+  context_generation:
+    trigger: "User submits prompt"
+    step_1: "ContextBuilder.BuildContextPack() called"
+    step_2: "Load PrefabRegistry from cache"
+    step_3: "Filter by selected tags (if any)"
+    step_4: "PrefabCatalogGenerator.GeneratePrefabCatalogJson(prefabs)"
+    step_5: "Build scene context (hierarchy, existing objects)"
+    step_6: "Combine: scene context + catalog + tools"
+    step_7: "Estimate tokens, truncate if needed"
+    output: "Complete context pack string"
+
+  gpt5_response:
+    input: "Context pack + user prompt"
+    processing: "GPT-5 reads catalog, plans scene layout"
+    output: |
+      {
+        "type": "function_call",
+        "call_id": "call_abc123",
+        "name": "instantiateObjects",
+        "arguments": "{\"objects\": [...]}"
+      }
+
+  parsing:
+    input: "GPT-5 function call response"
+    step_1: "OpenAIClient.ParseResponse() extracts function calls"
+    step_2: "ParseFunctionCallItem() detects instantiateObjects"
+    step_3: "ParseInstantiateObjectsAction() parses object array"
+    step_4: "Create InstantiatePrefabAction for each object"
+    output: "ActionPlan with List<InstantiatePrefabAction>"
+
+  approval:
+    input: "ActionPlan.Actions (list of InstantiatePrefabAction)"
+    display: "AIAssistantWindow shows checkboxes"
+    user_interaction: "Select/deselect objects to create"
+    output: "List<IAction> selectedActions"
+
+  execution:
+    input: "List<IAction> selectedActions"
+    processing: "DynamicPlanApplier.ApplyPlan()"
+    for_each_action: |
+      - Load prefab from prefabPath
+      - Instantiate via PrefabUtility
+      - Set name, position, rotation
+      - Set scale only if action.scale.HasValue
+      - Apply component parameters if any
+      - Register with Undo system
+    output: "List<ActionResult> with success/fail + instanceIds"
+
+  tool_output_submission:
+    input: "List<ActionResult>"
+    processing: |
+      Group results by callId (all from same batch share one callId).
+      Format as tool output:
+      {
+        "call_id": "call_abc123",
+        "output": "[{\"name\": \"Chair1\", \"instanceId\": 123, \"result\": \"success\"}, ...]"
+      }
+    submission: "OpenAIClient.SendRequest() with tool outputs"
+    gpt5_continuation: "GPT-5 receives results, can modify/delete if needed"
+
+# ============================================================================
+# TECHNICAL DETAILS
+# ============================================================================
+
+technical_details:
+
+  scale_handling:
+    problem: "Old architecture defaulted scale to (1,1,1), overriding prefab defaults"
+    solution: |
+      Vector3? scale field in InstantiatePrefabAction.
+      Only apply scale if action.scale.HasValue.
+      If null, prefab's original scale preserved.
+
+    parsing_logic: |
+      Vector3? scale = null;
+      if (args["scale"] != null) {
+        scale = ParseVector3(args["scale"]);
+      }
+
+    application_logic: |
+      if (action.scale.HasValue) {
+        instance.transform.localScale = action.scale.Value;
+      }
+      // else preserve prefab default
+
+  parameter_format:
+    key_format: "ComponentType_fieldName"
+    examples:
+      - "Rigidbody_mass: 10.0"
+      - "MeshRenderer_enabled: false"
+      - "Light_color: \"#FF0000\""
+      - "Transform_localPosition: {x: 1, y: 0, z: 0}"
+
+    namespacing_rationale: |
+      Multiple components may have same field name (e.g., 'enabled').
+      Prefix with component type disambiguates.
+
+  token_budget_management:
+    challenge: "Large projects may have hundreds of prefabs"
+    strategies:
+      priority_based_truncation: |
+        If catalog exceeds token budget:
+        1. Include primitives (always)
+        2. Include recently used prefabs
+        3. Include user-selected categories
+        4. Truncate least-used prefabs
+
+      lazy_loading: |
+        Future enhancement: Include only prefab names/descriptions in catalog.
+        If GPT-5 requests parameters for specific prefab, provide in follow-up.
+
+      category_filtering: |
+        Leverage existing tag/folder categorization.
+        User can select "Furniture" category, only include those prefabs.
+
+  error_handling:
+    invalid_prefab_path:
+      scenario: "GPT-5 provides non-existent prefabPath"
+      handling: |
+        ParseInstantiateObjectsAction() validates path against registry.
+        If not found, create action with error flag.
+        DynamicPlanApplier skips invalid actions, logs error.
+        Tool output includes error for that object.
+
+    partial_batch_failure:
+      scenario: "3 of 5 objects succeed, 2 fail"
+      handling: |
+        Each action executed independently in try-catch.
+        ActionResult tracks success/failure per object.
+        Tool output includes mix of success/error results.
+        GPT-5 can see what failed and retry or adjust.
+
+    parameter_type_mismatch:
+      scenario: "GPT-5 provides string for number parameter"
+      handling: |
+        ConvertValue() in DynamicPlanApplier handles type conversion.
+        If conversion fails, logs warning, skips that parameter.
+        Object still created, just missing that parameter override.
+
+# ============================================================================
+# MIGRATION & COMPATIBILITY
+# ============================================================================
+
+migration:
+
+  breaking_changes:
+    old_tool_format: |
+      Old conversation history with createRectangle, createCircle,
+      or per-prefab tools (createChair_01, etc.) will not work.
+
+    clean_break_decision: "User approved clean break - no backwards compatibility"
+
+    mitigation: |
+      Clear explanation in changelog/docs about architecture change.
+      Users start fresh conversations after upgrade.
+
+  data_migration:
+    prefab_registry: |
+      Existing PrefabRegistry.json compatible - no changes needed.
+      Scanning logic unchanged, just catalog generation is new.
+
+    scene_files: |
+      No impact on scene files - only affects editor tooling.
+
+    settings: |
+      AIAssistantSettings.asset compatible.
+      May update default PrefabScanFolder path, but old value preserved.
+
+  rollback_plan:
+    scenario: "Critical bug discovered after deployment"
+    approach: |
+      Git revert to previous commit.
+      Old code intact (rectangle/circle tools).
+      Low risk since clean architecture change, no data migration.
+
+# ============================================================================
+# TESTING STRATEGY
+# ============================================================================
+
+testing:
+
+  unit_tests:
+    - test: "PrefabCatalogGenerator with empty registry"
+      expected: "Valid JSON with empty prefabs array"
+
+    - test: "PrefabCatalogGenerator with single prefab"
+      expected: "JSON includes path, name, components, parameters"
+
+    - test: "ParseInstantiateObjectsAction with valid array"
+      expected: "Correct number of actions, fields populated"
+
+    - test: "ParseInstantiateObjectsAction with missing scale"
+      expected: "action.scale is null"
+
+    - test: "ParseInstantiateObjectsAction with partial scale"
+      expected: "scale.x from JSON, scale.y/z default to 1"
+
+  integration_tests:
+    - test: "Create 1 primitive cube"
+      prompt: "Create a cube at origin"
+      verify: "Single instantiateObjects call, 1 object in array, cube created"
+
+    - test: "Create multiple objects batch"
+      prompt: "Create a table with 4 chairs around it"
+      verify: "Single call, 5 objects in array, all positioned correctly"
+
+    - test: "Scale preservation"
+      prompt: "Create a chair" (no scale specified)
+      verify: "Chair uses prefab default scale, not (1,1,1)"
+
+    - test: "Scale override"
+      prompt: "Create a chair, make it twice as big"
+      verify: "Chair scale set to (2,2,2) or similar"
+
+    - test: "Component parameter override"
+      prompt: "Create a sphere with mass 50"
+      verify: "Rigidbody.mass = 50"
+
+    - test: "Bounds metadata - centered pivot"
+      setup: "Scan prefab with centered pivot (sphere, cube)"
+      verify: "centerOffset ≈ (0, 0, 0), size matches visual dimensions"
+
+    - test: "Bounds metadata - bottom pivot"
+      setup: "Scan prefab with bottom pivot (wall, furniture)"
+      verify: "centerOffset.y ≈ size.y/2, placement correct"
+
+    - test: "Bounds metadata - collider fallback"
+      setup: "Scan prefab with no renderers, only collider"
+      verify: "Uses collider bounds, size and centerOffset valid"
+
+  manual_testing:
+    - test: "Complex scene creation"
+      prompt: "Create a living room with sofa, coffee table, TV stand, lamp, and rug"
+      verify: |
+        - Single tool call with 5+ objects
+        - Reasonable spatial layout
+        - Approval UI shows all objects
+        - Can selectively execute
+
+    - test: "Token budget with large catalog"
+      setup: "Import 100+ prefabs"
+      verify: |
+        - Context build succeeds
+        - Catalog truncated if needed
+        - Most relevant prefabs included
+
+    - test: "Error recovery"
+      prompt: "Create objects including invalid prefab name"
+      verify: |
+        - Valid objects created
+        - Invalid object error logged
+        - Tool output includes error for invalid object
+        - GPT-5 can see error and retry
+
+# ============================================================================
+# PERFORMANCE METRICS
+# ============================================================================
+
+performance:
+
+  expected_improvements:
+    api_calls:
+      before: "N calls for N objects (e.g., 20 calls for 20 objects)"
+      after: "1 call for N objects"
+      improvement: "95%+ reduction"
+
+    token_usage:
+      before: |
+        Tools array: ~500 tokens per prefab × 100 prefabs = 50,000 tokens
+        Plus per-call overhead
+      after: |
+        Tools array: ~5 tools × 100 tokens = 500 tokens
+        Catalog: ~200 tokens per prefab × 100 = 20,000 tokens
+        Total: ~20,500 tokens
+      improvement: "~60% reduction in baseline, more with many prefabs"
+
+    response_time:
+      before: "Serial tool calls, 1-3s each, 20-60s for complex scene"
+      after: "Single call, 3-5s total"
+      improvement: "10-20x faster for complex scenes"
+
+  benchmarks_to_track:
+    - metric: "Average tool calls per scene creation"
+      target: "< 2 (instantiate + optional modify)"
+
+    - metric: "Token usage per context pack"
+      target: "< 30,000 tokens for 100 prefabs"
+
+    - metric: "End-to-end scene creation time"
+      target: "< 10s for 20-object scene"
+
+# ============================================================================
+# FUTURE ENHANCEMENTS
+# ============================================================================
+
+future_enhancements:
+
+  lazy_parameter_loading:
+    description: |
+      Include only prefab names/descriptions in initial catalog.
+      If GPT-5 needs parameters for specific prefab, it can request details.
+    benefit: "Further token reduction for large catalogs"
+    tool: "getPrefabDetails(prefabPath) → returns full parameter schema"
+
+  batch_modification:
+    description: "Extend modifyGameObject to accept array"
+    example: "Modify all chairs to have mass=10 in single call"
+    benefit: "Consistency with batch instantiation"
+
+  prefab_search:
+    description: "Tool for GPT-5 to search catalog by description"
+    example: "searchPrefabs(query: 'wooden furniture') → list of matches"
+    benefit: "Handle very large catalogs (1000+ prefabs)"
+
+  template_scenes:
+    description: "Pre-built scene templates (bedroom, office, etc.)"
+    format: "JSON describing object layout"
+    benefit: "Quick scene composition, learning dataset for GPT-5"
+
+# ============================================================================
+# RISKS & MITIGATION
+# ============================================================================
+
+risks:
+
+  gpt5_batch_complexity:
+    risk: "GPT-5 may struggle with planning large batches"
+    likelihood: "Low - GPT-5 excels at structured output"
+    impact: "Medium - could result in suboptimal layouts"
+    mitigation: |
+      - Provide clear examples in context
+      - Limit batch size via instructions (e.g., "max 20 objects per call")
+      - User can always approve/reject individual objects
+
+  token_budget_exceeded:
+    risk: "Large prefab catalog exceeds context window"
+    likelihood: "Medium - possible with 200+ prefabs"
+    impact: "Medium - some prefabs not available"
+    mitigation: |
+      - Implement priority-based truncation
+      - Category filtering (user selects which prefabs to include)
+      - Lazy loading (future enhancement)
+
+  parsing_robustness:
+    risk: "GPT-5 provides malformed JSON in objects array"
+    likelihood: "Low - GPT-5 generally reliable with schemas"
+    impact: "High - could crash or fail entire batch"
+    mitigation: |
+      - Robust error handling in ParseInstantiateObjectsAction()
+      - Try-catch per object (partial success supported)
+      - Clear error messages back to GPT-5 for correction
+
+  regression_bugs:
+    risk: "Major refactor introduces bugs in existing features"
+    likelihood: "Medium - touching core parsing/execution"
+    impact: "High - could break tool entirely"
+    mitigation: |
+      - Comprehensive testing (unit + integration + manual)
+      - Git feature branch for development
+      - Staged rollout (test on simple scenes first)
+      - Easy rollback plan (revert commit)
+
+# ============================================================================
+# SUCCESS CRITERIA
+# ============================================================================
+
+success_criteria:
+
+  functional:
+    - criterion: "Single tool call creates multiple objects"
+      verification: "Create 10 object scene, verify only 1 instantiateObjects call"
+
+    - criterion: "Scale preservation works"
+      verification: "Import furniture pack, create objects, verify correct sizes"
+
+    - criterion: "Approval UI shows all batch objects"
+      verification: "Batch of 5 objects shows 5 checkboxes"
+
+    - criterion: "Component parameters applied correctly"
+      verification: "Override Rigidbody.mass, verify in inspector"
+
+    - criterion: "Bounds metadata accurate for spatial reasoning"
+      verification: "Scan test prefabs, verify size/centerOffset match manual measurements"
+
+  performance:
+    - criterion: "90%+ reduction in API calls for multi-object scenes"
+      verification: "Compare before/after metrics for 20-object scene"
+
+    - criterion: "60%+ reduction in tool schema tokens"
+      verification: "Measure tools array token count before/after"
+
+  quality:
+    - criterion: "Code cleaner and more maintainable"
+      verification: "Code review - simpler parsing, fewer special cases"
+
+    - criterion: "No critical bugs in production"
+      verification: "1 week of testing without show-stoppers"
+
+# ============================================================================
+# ROLLOUT PLAN
+# ============================================================================
+
+rollout:
+
+  phase_development:
+    duration: "3-5 days"
+    tasks:
+      - "Implement primitive prefabs"
+      - "Create PrefabCatalogGenerator"
+      - "Update tool definitions"
+      - "Rewrite parsing logic"
+      - "Update context builder"
+      - "Remove deprecated code"
+
+  phase_testing:
+    duration: "2-3 days"
+    tasks:
+      - "Unit tests for new components"
+      - "Integration tests for end-to-end flow"
+      - "Manual testing with various prompts"
+      - "Performance benchmarking"
+
+  phase_deployment:
+    approach: "Feature branch → main merge"
+    steps:
+      - "Create git branch: feature/single-tool-batch"
+      - "Implement all changes"
+      - "Test thoroughly"
+      - "Code review"
+      - "Merge to main"
+      - "Tag release: v2.0.0-batch-architecture"
+
+  phase_monitoring:
+    duration: "1 week"
+    activities:
+      - "Monitor for bug reports"
+      - "Track performance metrics"
+      - "Gather user feedback"
+      - "Quick fixes if needed"
+
+# ============================================================================
+# DOCUMENTATION UPDATES
+# ============================================================================
+
+documentation:
+
+  user_facing:
+    - document: "README.md"
+      updates:
+        - "Explain new single-tool architecture"
+        - "Update usage examples to show batch creation"
+        - "Note scale preservation feature"
+
+    - document: "CHANGELOG.md"
+      entry: |
+        ## v2.0.0 - Single-Tool Batch Architecture
+
+        ### Breaking Changes
+        - Replaced per-prefab tools with single `instantiateObjects` tool
+        - Removed `createRectangle` and `createCircle` fallback tools
+        - Old conversation history incompatible (start fresh conversations)
+
+        ### Features
+        - Create multiple objects in single API call (10-100x faster)
+        - 90%+ reduction in tool calls
+        - 60%+ reduction in token usage
+        - Scale parameter truly optional (preserves prefab defaults)
+        - Primitive shapes now available as prefabs
+
+        ### Migration
+        - No data migration needed
+        - Start new conversations after upgrade
+        - Existing scenes and settings preserved
+
+  developer_facing:
+    - document: "architecture_toolrefactor.yaml"
+      purpose: "This document - comprehensive spec"
+
+    - document: "CODE_STRUCTURE.md"
+      updates:
+        - "Explain PrefabCatalogGenerator design"
+        - "Document batch parsing logic"
+        - "Show data flow diagrams"
+
+    - document: "API_REFERENCE.md"
+      updates:
+        - "Document instantiateObjects tool schema"
+        - "Explain prefab catalog JSON format"
+        - "Show example tool calls"
+
+# ============================================================================
+# APPENDIX
+# ============================================================================
+
+appendix:
+
+  example_tool_call_full:
+    description: "Complete example of GPT-5 tool call"
+    json: |
+      {
+        "type": "function_call",
+        "call_id": "call_abc123xyz",
+        "name": "instantiateObjects",
+        "arguments": {
+          "objects": [
+            {
+              "prefabPath": "Assets/Furniture/Table_Dining.prefab",
+              "name": "DiningTable",
+              "position": {"x": 0, "y": 0, "z": 0}
+            },
+            {
+              "prefabPath": "Assets/Furniture/Chair_Wood.prefab",
+              "name": "Chair_North",
+              "position": {"x": 0, "y": 0, "z": -1.2},
+              "rotation": {"x": 0, "y": 0, "z": 0}
+            },
+            {
+              "prefabPath": "Assets/Furniture/Chair_Wood.prefab",
+              "name": "Chair_East",
+              "position": {"x": 1.2, "y": 0, "z": 0},
+              "rotation": {"x": 0, "y": 270, "z": 0}
+            },
+            {
+              "prefabPath": "Assets/Furniture/Chair_Wood.prefab",
+              "name": "Chair_South",
+              "position": {"x": 0, "y": 0, "z": 1.2},
+              "rotation": {"x": 0, "y": 180, "z": 0}
+            },
+            {
+              "prefabPath": "Assets/Furniture/Chair_Wood.prefab",
+              "name": "Chair_West",
+              "position": {"x": -1.2, "y": 0, "z": 0},
+              "rotation": {"x": 0, "y": 90, "z": 0}
+            },
+            {
+              "prefabPath": "Assets/Lighting/Lamp_Ceiling.prefab",
+              "name": "DiningLight",
+              "position": {"x": 0, "y": 3, "z": 0},
+              "parameters": {
+                "Light_intensity": 1.5,
+                "Light_color": "#FFFFEE"
+              }
+            }
+          ]
+        }
+      }
+
+  example_catalog_snippet:
+    description: "Example prefab catalog JSON excerpt"
+    json: |
+      {
+        "prefabs": [
+          {
+            "path": "Assets/Primitives/Cube.prefab",
+            "name": "Cube",
+            "description": "Basic cube primitive with collider",
+            "size": {"x": 1.0, "y": 1.0, "z": 1.0},
+            "centerOffset": {"x": 0, "y": 0, "z": 0},
+            "components": [
+              {
+                "type": "MeshRenderer",
+                "parameters": {
+                  "enabled": {"type": "boolean", "default": true},
+                  "castShadows": {"type": "boolean", "default": true},
+                  "receiveShadows": {"type": "boolean", "default": true}
+                }
+              },
+              {
+                "type": "BoxCollider",
+                "parameters": {
+                  "isTrigger": {"type": "boolean", "default": false},
+                  "center": {"type": "Vector3", "default": {"x": 0, "y": 0, "z": 0}},
+                  "size": {"type": "Vector3", "default": {"x": 1, "y": 1, "z": 1}}
+                }
+              }
+            ]
+          },
+          {
+            "path": "Assets/Furniture/Chair_01.prefab",
+            "name": "Chair_01",
+            "description": "Wooden dining chair with physics",
+            "size": {"x": 0.5, "y": 0.9, "z": 0.5},
+            "centerOffset": {"x": 0, "y": 0.45, "z": 0},
+            "components": [
+              {
+                "type": "Rigidbody",
+                "parameters": {
+                  "mass": {"type": "number", "default": 5.0, "description": "Mass in kg"},
+                  "drag": {"type": "number", "default": 0.0},
+                  "useGravity": {"type": "boolean", "default": true}
+                }
+              },
+              {
+                "type": "MeshRenderer",
+                "parameters": {
+                  "enabled": {"type": "boolean", "default": true}
+                }
+              }
+            ]
+          }
+        ]
+      }
+
+  references:
+    - "OpenAI GPT-5 Responses API documentation"
+    - "Unity PrefabUtility API reference"
+    - "Unity GameObject.CreatePrimitive() documentation"
+    - "SimpleJSON library for C# JSON parsing"
+    - "Unity ScriptableObject serialization best practices"
+
+# ============================================================================
+# KEY CHANGES FROM v1.1 TO v1.2
+# ============================================================================
+
+v1_2_changes_summary:
+  pivot_center_problem: |
+    Users reported GPT-5 confusing where to place objects. Walls appeared half-buried,
+    furniture floated. Root cause: Unity positions refer to PIVOT POINT, not visual center.
+    Prefabs have pivots at different locations (bottom, center, corner).
+
+  solution_implemented: |
+    Added bounds metadata to PrefabMetadata:
+    - size: Vector3 - Bounding box dimensions (width, height, depth)
+    - centerOffset: Vector3 - Offset from pivot to visual center
+
+    Calculation during scanning (Phase 0):
+    - Temporarily instantiate prefab at origin with identity transform
+    - Get combined Renderer.bounds (all child renderers, includeInactive)
+    - Fallback to Collider.bounds if no renderers
+    - Skip prefabs without either (organizational or broken assets)
+    - size = bounds.size
+    - centerOffset = bounds.center - transform.position
+
+  gpt5_benefits: |
+    GPT-5 now receives in catalog:
+    - "size": {"x": 0.5, "y": 0.9, "z": 0.5} - Can reason about spatial fit
+    - "centerOffset": {"x": 0, "y": 0.45, "z": 0} - Can calculate visual center
+
+    Context instructions clarify:
+    - Position = pivot point (not center)
+    - visualCenter = position + centerOffset
+    - Use size to understand dimensions
+
+  implementation_impact:
+    files_modified:
+      - "PrefabMetadata.cs" - Added size, centerOffset fields
+      - "PrefabScanner.cs" - Temporary instantiation, bounds calculation
+      - "PrefabCatalogGenerator.cs" - Include bounds in JSON
+      - "ContextBuilder.cs" - Add positioning instructions
+
+    phases_affected:
+      - "Phase 0 (NEW)" - Bounds metadata calculation
+      - "Phase 1" - Renumbered (was Phase 1, now Phase 1)
+      - "Phase 2" - Updated to include bounds in catalog
+      - "Phase 5" - Updated context instructions
+      - "All subsequent phases renumbered"
+
+  design_decisions:
+    why_both_size_and_offset: "Different use cases - size for spatial fit, offset for precise placement"
+    why_renderer_over_collider: "Visual bounds more relevant for placement than physics bounds"
+    why_includeInactive: "Captures LOD systems, toggleable parts, hidden visualizations"
+    why_skip_invalid: "Cleaner than including prefabs with null bounds, better UX"
+    why_temporary_instantiation: "Renderer.bounds only valid for active scene objects, not assets"
+
+  testing_additions:
+    - "Centered pivot (sphere): centerOffset ≈ (0,0,0)"
+    - "Bottom pivot (wall): centerOffset.y ≈ size.y/2"
+    - "Collider fallback: Works for prefabs without renderers"
+    - "Invalid prefabs: Skipped with warning"
+
+# ============================================================================
+# KEY CORRECTIONS FROM v1.0 TO v1.1
+# ============================================================================
+
+corrections_summary:
+  critical_issue_found: |
+    OpenAI Responses API requires unique callIds in tool outputs array.
+    Original architecture would create duplicate callIds for batch actions.
+
+  root_cause: |
+    Batch tool call (instantiateObjects with 5 objects) has ONE callId.
+    Parsing creates 5 separate InstantiatePrefabAction objects, all sharing that callId.
+    Original plan was to submit 5 separate tool outputs with same callId → REJECTED by API.
+
+  solution_implemented: |
+    Output aggregation by callId in BuildRequestBody():
+    - Group ActionResults by callId
+    - Single result → existing format (backwards compatible)
+    - Multiple results → JSON array
+    - Submit ONE function_call_output per unique callId
+
+  design_tradeoffs:
+    individual_actions_preserved: |
+      Still create separate InstantiatePrefabAction objects for checkbox UI.
+      This maintains existing approval workflow without UI changes.
+
+    aggregation_on_submit: |
+      Group results only when submitting tool outputs.
+      Cleaner than creating monolithic batch action class.
+
+    backwards_compatible: |
+      Non-batch tools (modifyGameObject, etc.) have unique callIds.
+      They get single-result format, no behavior change.
+
+  phases_affected:
+    phase_4: "Added note about shared callId in parsing"
+    phase_6: "NEW - Output aggregation implementation (most critical change)"
+    phase_7: "NEW - UI verification (confirms no changes needed)"
+    phase_8: "Renumbered from phase_7 (cleanup remains same)"
+
+  implementation_complexity:
+    low_to_medium: |
+      Main change is in BuildRequestBody() method (OpenAIClient.cs).
+      Group results by callId, then format appropriately.
+      Rest of codebase works as-is (parsing, UI, execution).
+
+  risk_assessment:
+    low_risk: |
+      Backwards compatible with existing non-batch tools.
+      Batch tools are new, so no regression possible.
+      Output format validated against OpenAI API spec.

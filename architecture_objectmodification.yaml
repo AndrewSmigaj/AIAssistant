@@ -1,5 +1,7 @@
 # Object Modification System Architecture
 # Enables AI to modify and delete GameObjects created in previous conversation turns
+#
+# REVIEWED: 2025-10-26 - All critical issues fixed
 
 ## Overview
 AI tracks created objects via instanceIDs in tool outputs and scene context.
@@ -23,11 +25,12 @@ AI cannot reference objects for modification.
 Add to GameObjectInfo model and ProjectIndexer scanning.
 
 ### Files Modified
-- Assets/Editor/AIAssistant/Models/GameObjectInfo.cs
-- Assets/Editor/AIAssistant/ProjectIndexer.cs (lines ~123-129)
+- Assets/Editor/AIAssistant/ProjectIndexer.cs (lines ~344-350 for model, ~123-129 for scanning)
 
-### Changes to GameObjectInfo.cs
+### Changes to GameObjectInfo Model
+In ProjectIndexer.cs, update GameObjectInfo class (line ~344):
 ```csharp
+[Serializable]
 public class GameObjectInfo
 {
     public string name;
@@ -86,15 +89,15 @@ Scene JSON artifacts now include:
 
 ---
 
-## Part 2: Rich Tool Outputs
+## Part 2: Tool Outputs with instanceID
 
 ### Problem
 Tool outputs only return {status, objectName}.
 AI cannot get instanceIDs from create operations.
 
 ### Solution
-Enhance ActionResult with InstanceId and OutputJson fields.
-Build rich JSON outputs with instanceId, name, position, rotation, scale.
+Enhance ActionResult with InstanceId field.
+Build simple outputs with instanceId and name (position/rotation/scale come from scene context).
 
 ### Files Modified
 - Assets/Editor/AIAssistant/Models/ActionResult.cs
@@ -106,59 +109,21 @@ Add after line 31:
 /// <summary>
 /// Instance ID of created/modified GameObject.
 /// Null if action failed or doesn't involve a GameObject.
+/// Used for tracking objects across conversation turns.
 /// </summary>
 public int? InstanceId;
-
-/// <summary>
-/// Rich JSON output for tool result submission to OpenAI.
-/// Includes instanceId, name, position, rotation, scale.
-/// Executors can populate this directly, otherwise computed from CreatedObject.
-/// </summary>
-public string OutputJson;
 ```
 
 ### Changes to OpenAIClient.cs BuildRequestBody()
-Replace simple output building (lines ~125-146) with rich output:
+Replace simple output building (lines ~125-146):
 ```csharp
 if (result.Success)
 {
-    // Use OutputJson if provided by executor
-    if (!string.IsNullOrEmpty(result.OutputJson))
-    {
-        outputContent = result.OutputJson;
-    }
-    else
-    {
-        // Build from CreatedObject
-        string objectName = "unknown";
-        int? instanceId = null;
+    // For successful GameObject operations, both CreatedObject and InstanceId should be set
+    string objectName = result.CreatedObject != null ? result.CreatedObject.name : "unknown";
+    int instanceId = result.InstanceId.Value;  // Will throw if null - executor must set this
 
-        if (result.CreatedObject != null)
-        {
-            try
-            {
-                objectName = result.CreatedObject.name;
-                instanceId = result.CreatedObject.GetInstanceID();
-            }
-            catch { objectName = "destroyed"; }
-        }
-
-        // Rich JSON with full transform data
-        var obj = result.CreatedObject;
-        if (obj != null && instanceId.HasValue)
-        {
-            string posJson = $"\\\"x\\\":{obj.transform.position.x},\\\"y\\\":{obj.transform.position.y},\\\"z\\\":{obj.transform.position.z}";
-            string rotJson = $"\\\"x\\\":{obj.transform.eulerAngles.x},\\\"y\\\":{obj.transform.eulerAngles.y},\\\"z\\\":{obj.transform.eulerAngles.z}";
-            string scaleJson = $"\\\"x\\\":{obj.transform.localScale.x},\\\"y\\\":{obj.transform.localScale.y},\\\"z\\\":{obj.transform.localScale.z}";
-
-            outputContent = $"{{\\\"status\\\":\\\"success\\\",\\\"instanceId\\\":{instanceId.Value},\\\"name\\\":\\\"{EscapeJsonString(objectName)}\\\",\\\"position\\\":{{{posJson}}},\\\"rotation\\\":{{{rotJson}}},\\\"scale\\\":{{{scaleJson}}}}}";
-        }
-        else
-        {
-            // Fallback for objects without transform
-            outputContent = $"{{\\\"status\\\":\\\"success\\\",\\\"objectName\\\":\\\"{EscapeJsonString(objectName)}\\\"}}";
-        }
-    }
+    outputContent = $"{{\\\"status\\\":\\\"success\\\",\\\"instanceId\\\":{instanceId},\\\"name\\\":\\\"{EscapeJsonString(objectName)}\\\"}}";
 }
 else
 {
@@ -167,7 +132,7 @@ else
 ```
 
 ### Result
-Tool outputs sent to OpenAI now include:
+Tool outputs sent to OpenAI (simple - transform data comes from scene context):
 ```json
 {
   "type": "function_call_output",
@@ -175,10 +140,7 @@ Tool outputs sent to OpenAI now include:
   "output": "{
     \"status\": \"success\",
     \"instanceId\": 12345,
-    \"name\": \"RaceCar\",
-    \"position\": {\"x\": 10, \"y\": 0, \"z\": 5},
-    \"rotation\": {\"x\": 0, \"y\": 45, \"z\": 0},
-    \"scale\": {\"x\": 1, \"y\": 1, \"z\": 1}
+    \"name\": \"RaceCar\"
   }"
 }
 ```
@@ -363,7 +325,7 @@ Tools JSON sent to OpenAI:
 - Assets/Editor/AIAssistant/OpenAIClient.cs
 
 ### Add to ParseFunctionCallItem()
-After line ~460 (after prefab parsing), add:
+**CRITICAL: Add BEFORE the `functionName.StartsWith("create")` block** (after line ~452):
 
 ```csharp
 else if (functionName == "modifyGameObject")
@@ -378,7 +340,16 @@ else if (functionName == "deleteGameObject")
     action.callId = callId;
     plan.Actions.Add(action);
 }
+else if (functionName.StartsWith("create"))  // Must be AFTER modify/delete checks
+{
+    // Dynamic prefab function (e.g., "createVehiclesRaceCar")
+    var action = ParsePrefabAction(args, functionName);
+    action.callId = callId;
+    plan.Actions.Add(action);
+}
 ```
+
+**Reasoning:** If placed after `functionName.StartsWith("create")`, the modify/delete cases would never be reached since "modifyGameObject" doesn't start with "create".
 
 ### Add Parser Methods
 After ParsePrefabAction() method (~line 569), add:
@@ -481,6 +452,12 @@ private static DeleteGameObjectAction ParseDeleteGameObjectAction(JSONNode args)
 
 ### File Modified
 - Assets/Editor/AIAssistant/DynamicPlanApplier.cs
+
+### Required Imports
+Add to top of file if not already present:
+```csharp
+using System.Reflection;  // For FieldInfo, BindingFlags
+```
 
 ### Add to Action Dispatch
 In ApplyPlan() method, after prefab action handling (~line 63), add:
@@ -595,6 +572,9 @@ private static ActionResult ExecuteModifyGameObject(ModifyGameObjectAction actio
                     continue;
                 }
 
+                // CRITICAL: Record component BEFORE modifying
+                Undo.RecordObject(component, "AI Assistant Modify Component");
+
                 // Convert value to field type (reuse existing ConvertValue logic)
                 object convertedValue = ConvertValue(kvp.Value, field.FieldType);
 
@@ -611,15 +591,12 @@ private static ActionResult ExecuteModifyGameObject(ModifyGameObjectAction actio
         }
     }
 
-    // Build rich output JSON
-    string outputJson = BuildGameObjectOutputJson(gameObj);
-
     return new ActionResult
     {
         Action = action,
         Success = true,
-        InstanceId = gameObj.GetInstanceID(),
-        OutputJson = outputJson
+        CreatedObject = gameObj,
+        InstanceId = gameObj.GetInstanceID()
     };
 }
 
@@ -655,43 +632,14 @@ private static ActionResult ExecuteDeleteGameObject(DeleteGameObjectAction actio
 
     Debug.Log($"[AI Assistant] Deleted GameObject '{objectName}'");
 
+    // Note: Delete actions don't return instanceId (object no longer exists)
     return new ActionResult
     {
         Action = action,
-        Success = true,
-        OutputJson = $"{{\\\"status\\\":\\\"success\\\",\\\"deleted\\\":\\\"{EscapeJsonString(objectName)}\\\"}}";
+        Success = true
+        // CreatedObject and InstanceId are null for delete operations
     };
 }
-
-/// <summary>
-/// Builds rich JSON output for GameObject (includes instanceId, name, transform).
-/// </summary>
-private static string BuildGameObjectOutputJson(GameObject obj)
-{
-    var sb = new StringBuilder();
-    sb.Append("{");
-    sb.Append($"\\\"status\\\":\\\"success\\\",");
-    sb.Append($"\\\"instanceId\\\":{obj.GetInstanceID()},");
-    sb.Append($"\\\"name\\\":\\\"{EscapeJsonString(obj.name)}\\\",");
-
-    // Position
-    var pos = obj.transform.position;
-    sb.Append($"\\\"position\\\":{{\\\"x\\\":{pos.x},\\\"y\\\":{pos.y},\\\"z\\\":{pos.z}}},");
-
-    // Rotation (Euler angles)
-    var rot = obj.transform.eulerAngles;
-    sb.Append($"\\\"rotation\\\":{{\\\"x\\\":{rot.x},\\\"y\\\":{rot.y},\\\"z\\\":{rot.z}}},");
-
-    // Scale
-    var scale = obj.transform.localScale;
-    sb.Append($"\\\"scale\\\":{{\\\"x\\\":{scale.x},\\\"y\\\":{scale.y},\\\"z\\\":{scale.z}}}");
-
-    sb.Append("}");
-    return sb.ToString();
-}
-
-// Note: EscapeJsonString helper already exists in OpenAIClient, may need to make it accessible
-// Or duplicate here: replace \ with \\, " with \", newlines with \n
 ```
 
 ---
@@ -712,10 +660,7 @@ Tool output returned to AI:
 {
   "status": "success",
   "instanceId": 12345,
-  "name": "RaceCar",
-  "position": {"x": 10, "y": 0, "z": 5},
-  "rotation": {"x": 0, "y": 0, "z": 0},
-  "scale": {"x": 1, "y": 1, "z": 1}
+  "name": "RaceCar"
 }
 ```
 
@@ -734,9 +679,7 @@ Tool output returned to AI:
 {
   "status": "success",
   "instanceId": 12345,
-  "name": "RaceCar",
-  "position": {"x": 10, "y": 0, "z": 5},
-  ...
+  "name": "RaceCar"
 }
 ```
 
@@ -755,10 +698,11 @@ AI calls: deleteGameObject(instanceId=12345)
 
 Tool output:
 {
-  "status": "success",
-  "deleted": "RaceCar"
+  "status": "success"
 }
 ```
+
+Note: After deletion, the object disappears from scene context in the next turn.
 
 ---
 
@@ -781,13 +725,15 @@ Tool output:
 - Works with ANY component on ANY GameObject
 - Slightly slower than cached FieldInfo, but acceptable for interactive use
 
-### Tool Output Richness
-- Always include instanceId, name, position, rotation, scale
-- Enables conversation continuity (AI tracks what it created/modified)
-- Enables chaining operations without re-querying scene
+### Tool Output Simplicity
+- Only include instanceId and name in tool outputs
+- Transform data (position/rotation/scale) comes from scene context
+- Reduces token usage - no duplicate data
+- Scene context refreshes before each turn, so AI always has current state
 
 ### Undo Support
 - All modifications use Undo.RecordObject before changes
+- Components MUST be recorded before field.SetValue()
 - Delete uses Undo.DestroyObjectImmediate
 - Single undo group for batch operations (inherited from existing pattern)
 
@@ -799,8 +745,8 @@ Tool output:
 2. **Enhance ActionResult** (add InstanceId, OutputJson fields)
 3. **Create action classes** (ModifyGameObjectAction, DeleteGameObjectAction)
 4. **Add tool definitions** (DynamicToolGenerator methods)
-5. **Add parsing** (OpenAIClient parser methods)
-6. **Add execution** (DynamicPlanApplier executor methods)
+5. **Add parsing** (OpenAIClient parser methods - ORDER MATTERS!)
+6. **Add execution** (DynamicPlanApplier executor methods + helpers)
 7. **Enhance tool outputs** (OpenAIClient BuildRequestBody)
 8. **Test workflow**: create → modify → delete
 
@@ -818,6 +764,7 @@ Tool output:
 1. Create prefab with parameters: "Create a race car"
 2. Modify component field: "Set speed to 100" → modifyGameObject(parameters={CarController_maxSpeed: 100})
 3. Verify field value changed
+4. Test undo functionality
 
 ### Test 3: Delete
 1. Create object
@@ -834,6 +781,19 @@ Tool output:
 2. Save and reload scene
 3. instanceIDs change → modifications will fail
 4. Document limitation (session-only IDs)
+
+---
+
+## Critical Implementation Notes
+
+### Parsing Order Critical Bug
+**MUST** add modifyGameObject/deleteGameObject parsing **BEFORE** the `functionName.StartsWith("create")` catch-all, otherwise those functions will be logged as "Unknown function".
+
+### Undo Recording Critical Bug
+**MUST** call `Undo.RecordObject(component, ...)` BEFORE `field.SetValue()` when modifying component fields, otherwise component modifications won't be undoable.
+
+### CreatedObject Consistency
+Set `CreatedObject = gameObj` in ExecuteModifyGameObject result for consistency with create actions, even though OutputJson is already populated.
 
 ---
 
