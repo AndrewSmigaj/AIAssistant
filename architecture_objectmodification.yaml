@@ -1,0 +1,866 @@
+# Object Modification System Architecture
+# Enables AI to modify and delete GameObjects created in previous conversation turns
+
+## Overview
+AI tracks created objects via instanceIDs in tool outputs and scene context.
+No "find" tool needed - AI already has full scene context with instanceIDs.
+Two new tools: modifyGameObject, deleteGameObject
+
+## Core Design Principle
+Everything is a GameObject. Use instanceIDs for identification (session-only).
+Scene context provides instanceIDs. Tool outputs return instanceIDs.
+AI references objects by instanceID in subsequent operations.
+
+---
+
+## Part 1: Enhanced Scene Indexing
+
+### Problem
+Current scene index lacks instanceIDs, rotation, scale.
+AI cannot reference objects for modification.
+
+### Solution
+Add to GameObjectInfo model and ProjectIndexer scanning.
+
+### Files Modified
+- Assets/Editor/AIAssistant/Models/GameObjectInfo.cs
+- Assets/Editor/AIAssistant/ProjectIndexer.cs (lines ~123-129)
+
+### Changes to GameObjectInfo.cs
+```csharp
+public class GameObjectInfo
+{
+    public string name;
+    public bool active;
+    public Vector3Serializable position;
+    public Vector3Serializable rotation;  // NEW - Euler angles
+    public Vector3Serializable scale;     // NEW - local scale
+    public int childCount;
+    public int instanceId;                // NEW - for object identification
+}
+```
+
+### Changes to ProjectIndexer.cs IndexScenes()
+Replace GameObjectInfo construction (line ~123):
+```csharp
+// OLD:
+sceneInfo.rootObjects.Add(new GameObjectInfo
+{
+    name = go.name,
+    active = go.activeInHierarchy,
+    position = new Vector3Serializable(go.transform.position),
+    childCount = go.transform.childCount
+});
+
+// NEW:
+sceneInfo.rootObjects.Add(new GameObjectInfo
+{
+    name = go.name,
+    active = go.activeInHierarchy,
+    position = new Vector3Serializable(go.transform.position),
+    rotation = new Vector3Serializable(go.transform.eulerAngles),
+    scale = new Vector3Serializable(go.transform.localScale),
+    childCount = go.transform.childCount,
+    instanceId = go.GetInstanceID()
+});
+```
+
+### Result
+Scene JSON artifacts now include:
+```json
+{
+  "sceneName": "SampleScene",
+  "rootObjects": [
+    {
+      "name": "RaceCar",
+      "active": true,
+      "position": {"x": 10, "y": 0, "z": 5},
+      "rotation": {"x": 0, "y": 45, "z": 0},
+      "scale": {"x": 1, "y": 1, "z": 1},
+      "childCount": 0,
+      "instanceId": 12345
+    }
+  ]
+}
+```
+
+---
+
+## Part 2: Rich Tool Outputs
+
+### Problem
+Tool outputs only return {status, objectName}.
+AI cannot get instanceIDs from create operations.
+
+### Solution
+Enhance ActionResult with InstanceId and OutputJson fields.
+Build rich JSON outputs with instanceId, name, position, rotation, scale.
+
+### Files Modified
+- Assets/Editor/AIAssistant/Models/ActionResult.cs
+- Assets/Editor/AIAssistant/OpenAIClient.cs (lines ~125-146)
+
+### Changes to ActionResult.cs
+Add after line 31:
+```csharp
+/// <summary>
+/// Instance ID of created/modified GameObject.
+/// Null if action failed or doesn't involve a GameObject.
+/// </summary>
+public int? InstanceId;
+
+/// <summary>
+/// Rich JSON output for tool result submission to OpenAI.
+/// Includes instanceId, name, position, rotation, scale.
+/// Executors can populate this directly, otherwise computed from CreatedObject.
+/// </summary>
+public string OutputJson;
+```
+
+### Changes to OpenAIClient.cs BuildRequestBody()
+Replace simple output building (lines ~125-146) with rich output:
+```csharp
+if (result.Success)
+{
+    // Use OutputJson if provided by executor
+    if (!string.IsNullOrEmpty(result.OutputJson))
+    {
+        outputContent = result.OutputJson;
+    }
+    else
+    {
+        // Build from CreatedObject
+        string objectName = "unknown";
+        int? instanceId = null;
+
+        if (result.CreatedObject != null)
+        {
+            try
+            {
+                objectName = result.CreatedObject.name;
+                instanceId = result.CreatedObject.GetInstanceID();
+            }
+            catch { objectName = "destroyed"; }
+        }
+
+        // Rich JSON with full transform data
+        var obj = result.CreatedObject;
+        if (obj != null && instanceId.HasValue)
+        {
+            string posJson = $"\\\"x\\\":{obj.transform.position.x},\\\"y\\\":{obj.transform.position.y},\\\"z\\\":{obj.transform.position.z}";
+            string rotJson = $"\\\"x\\\":{obj.transform.eulerAngles.x},\\\"y\\\":{obj.transform.eulerAngles.y},\\\"z\\\":{obj.transform.eulerAngles.z}";
+            string scaleJson = $"\\\"x\\\":{obj.transform.localScale.x},\\\"y\\\":{obj.transform.localScale.y},\\\"z\\\":{obj.transform.localScale.z}";
+
+            outputContent = $"{{\\\"status\\\":\\\"success\\\",\\\"instanceId\\\":{instanceId.Value},\\\"name\\\":\\\"{EscapeJsonString(objectName)}\\\",\\\"position\\\":{{{posJson}}},\\\"rotation\\\":{{{rotJson}}},\\\"scale\\\":{{{scaleJson}}}}}";
+        }
+        else
+        {
+            // Fallback for objects without transform
+            outputContent = $"{{\\\"status\\\":\\\"success\\\",\\\"objectName\\\":\\\"{EscapeJsonString(objectName)}\\\"}}";
+        }
+    }
+}
+else
+{
+    outputContent = $"{{\\\"status\\\":\\\"error\\\",\\\"message\\\":\\\"{EscapeJsonString(result.ErrorMessage ?? "unknown error")}\\\"}}";
+}
+```
+
+### Result
+Tool outputs sent to OpenAI now include:
+```json
+{
+  "type": "function_call_output",
+  "call_id": "call_xyz",
+  "output": "{
+    \"status\": \"success\",
+    \"instanceId\": 12345,
+    \"name\": \"RaceCar\",
+    \"position\": {\"x\": 10, \"y\": 0, \"z\": 5},
+    \"rotation\": {\"x\": 0, \"y\": 45, \"z\": 0},
+    \"scale\": {\"x\": 1, \"y\": 1, \"z\": 1}
+  }"
+}
+```
+
+---
+
+## Part 3: New Action Classes
+
+### Files to Create
+- Assets/Editor/AIAssistant/Actions/ModifyGameObjectAction.cs
+- Assets/Editor/AIAssistant/Actions/DeleteGameObjectAction.cs
+
+### ModifyGameObjectAction.cs
+```csharp
+using System.Collections.Generic;
+using UnityEngine;
+
+namespace UnityEditor.AIAssistant
+{
+    /// <summary>
+    /// Action to modify an existing GameObject's transform or component properties.
+    /// All modification fields are optional - only specified fields get changed.
+    /// </summary>
+    public class ModifyGameObjectAction : IAction
+    {
+        /// <summary>
+        /// OpenAI tool call ID for submitting results.
+        /// </summary>
+        public string callId;
+
+        /// <summary>
+        /// Instance ID of GameObject to modify (from scene context or creation output).
+        /// </summary>
+        public int instanceId;
+
+        // Transform modifications (all optional)
+        public string name;               // Rename
+        public Vector3? position;         // Move
+        public Vector3? rotation;         // Rotate (Euler angles)
+        public Vector3? scale;            // Scale
+        public bool? active;              // Enable/disable
+
+        /// <summary>
+        /// Component field modifications (optional).
+        /// Key format: "ComponentType_fieldName"
+        /// Value: new value (will be type-converted via reflection)
+        /// </summary>
+        public Dictionary<string, object> parameters;
+
+        public string GetDescription()
+        {
+            return $"Modify GameObject (ID: {instanceId})";
+        }
+
+        public string GetCallId() => callId;
+    }
+}
+```
+
+### DeleteGameObjectAction.cs
+```csharp
+using UnityEngine;
+
+namespace UnityEditor.AIAssistant
+{
+    /// <summary>
+    /// Action to delete a GameObject from the scene.
+    /// </summary>
+    public class DeleteGameObjectAction : IAction
+    {
+        /// <summary>
+        /// OpenAI tool call ID for submitting results.
+        /// </summary>
+        public string callId;
+
+        /// <summary>
+        /// Instance ID of GameObject to delete.
+        /// </summary>
+        public int instanceId;
+
+        public string GetDescription()
+        {
+            return $"Delete GameObject (ID: {instanceId})";
+        }
+
+        public string GetCallId() => callId;
+    }
+}
+```
+
+---
+
+## Part 4: Tool Definitions
+
+### File Modified
+- Assets/Editor/AIAssistant/DynamicToolGenerator.cs
+
+### Add Tool Generation Methods
+After GenerateFallbackToolsJson() method (~line 82), add:
+
+```csharp
+/// <summary>
+/// Generates modifyGameObject tool definition.
+/// </summary>
+private static string GenerateModifyGameObjectTool()
+{
+    return @"  {
+    ""type"": ""function"",
+    ""name"": ""modifyGameObject"",
+    ""description"": ""Modify a GameObject's transform or component properties"",
+    ""parameters"": {
+      ""type"": ""object"",
+      ""properties"": {
+        ""instanceId"": {""type"": ""number"", ""description"": ""GameObject instance ID from scene context or creation output""},
+        ""name"": {""type"": ""string"", ""description"": ""New name (optional)""},
+        ""position"": {""type"": ""object"", ""properties"": {""x"": {""type"": ""number""}, ""y"": {""type"": ""number""}, ""z"": {""type"": ""number""}}, ""description"": ""New position (optional)""},
+        ""rotation"": {""type"": ""object"", ""properties"": {""x"": {""type"": ""number""}, ""y"": {""type"": ""number""}, ""z"": {""type"": ""number""}}, ""description"": ""New rotation in Euler degrees (optional)""},
+        ""scale"": {""type"": ""object"", ""properties"": {""x"": {""type"": ""number""}, ""y"": {""type"": ""number""}, ""z"": {""type"": ""number""}}, ""description"": ""New scale (optional)""},
+        ""active"": {""type"": ""boolean"", ""description"": ""Set active state (optional)""},
+        ""parameters"": {""type"": ""object"", ""description"": ""Component parameters as ComponentType_fieldName: value (optional)""}
+      },
+      ""required"": [""instanceId""]
+    }
+  }";
+}
+
+/// <summary>
+/// Generates deleteGameObject tool definition.
+/// </summary>
+private static string GenerateDeleteGameObjectTool()
+{
+    return @"  {
+    ""type"": ""function"",
+    ""name"": ""deleteGameObject"",
+    ""description"": ""Delete a GameObject from the scene"",
+    ""parameters"": {
+      ""type"": ""object"",
+      ""properties"": {
+        ""instanceId"": {""type"": ""number"", ""description"": ""GameObject instance ID to delete""}
+      },
+      ""required"": [""instanceId""]
+    }
+  }";
+}
+```
+
+### Modify GenerateToolsJson()
+In GenerateToolsJson() method, after adding fallback tools (line ~34), add:
+
+```csharp
+sb.Append(fallbackJson.Trim());
+
+// Add modification tools (always available)
+sb.Append(",\n");
+sb.Append(GenerateModifyGameObjectTool());
+sb.Append(",\n");
+sb.Append(GenerateDeleteGameObjectTool());
+
+// Load registry and add prefab tools if available
+PrefabRegistry registry = PrefabRegistryCache.Load();
+// ... rest of existing code
+```
+
+### Result
+Tools JSON sent to OpenAI:
+```json
+[
+  {"type": "function", "name": "createRectangle", ...},
+  {"type": "function", "name": "createCircle", ...},
+  {"type": "function", "name": "modifyGameObject", ...},
+  {"type": "function", "name": "deleteGameObject", ...},
+  {"type": "function", "name": "createVehiclesRaceCar", ...},
+  ...
+]
+```
+
+---
+
+## Part 5: Action Parsing
+
+### File Modified
+- Assets/Editor/AIAssistant/OpenAIClient.cs
+
+### Add to ParseFunctionCallItem()
+After line ~460 (after prefab parsing), add:
+
+```csharp
+else if (functionName == "modifyGameObject")
+{
+    var action = ParseModifyGameObjectAction(args);
+    action.callId = callId;
+    plan.Actions.Add(action);
+}
+else if (functionName == "deleteGameObject")
+{
+    var action = ParseDeleteGameObjectAction(args);
+    action.callId = callId;
+    plan.Actions.Add(action);
+}
+```
+
+### Add Parser Methods
+After ParsePrefabAction() method (~line 569), add:
+
+```csharp
+/// <summary>
+/// Parses modifyGameObject function arguments into ModifyGameObjectAction.
+/// </summary>
+private static ModifyGameObjectAction ParseModifyGameObjectAction(JSONNode args)
+{
+    try
+    {
+        var action = new ModifyGameObjectAction
+        {
+            instanceId = args["instanceId"].AsInt
+        };
+
+        // Optional string fields
+        if (args["name"] != null)
+            action.name = args["name"].Value;
+
+        // Optional bool field
+        if (args["active"] != null)
+            action.active = args["active"].AsBool;
+
+        // Optional position
+        var posNode = args["position"];
+        if (posNode != null)
+        {
+            action.position = new Vector3(
+                posNode["x"].AsFloat,
+                posNode["y"].AsFloat,
+                posNode["z"].AsFloat
+            );
+        }
+
+        // Optional rotation (Euler angles)
+        var rotNode = args["rotation"];
+        if (rotNode != null)
+        {
+            action.rotation = new Vector3(
+                rotNode["x"].AsFloat,
+                rotNode["y"].AsFloat,
+                rotNode["z"].AsFloat
+            );
+        }
+
+        // Optional scale
+        var scaleNode = args["scale"];
+        if (scaleNode != null)
+        {
+            action.scale = new Vector3(
+                scaleNode["x"].AsFloat,
+                scaleNode["y"].AsFloat,
+                scaleNode["z"].AsFloat
+            );
+        }
+
+        // Optional component parameters
+        var paramsNode = args["parameters"];
+        if (paramsNode != null && paramsNode.Count > 0)
+        {
+            action.parameters = new Dictionary<string, object>();
+            foreach (var kvp in paramsNode)
+            {
+                action.parameters[kvp.Key] = kvp.Value;
+            }
+        }
+
+        return action;
+    }
+    catch (Exception ex)
+    {
+        throw new Exception($"Invalid modifyGameObject parameters: {ex.Message}");
+    }
+}
+
+/// <summary>
+/// Parses deleteGameObject function arguments into DeleteGameObjectAction.
+/// </summary>
+private static DeleteGameObjectAction ParseDeleteGameObjectAction(JSONNode args)
+{
+    try
+    {
+        return new DeleteGameObjectAction
+        {
+            instanceId = args["instanceId"].AsInt
+        };
+    }
+    catch (Exception ex)
+    {
+        throw new Exception($"Invalid deleteGameObject parameters: {ex.Message}");
+    }
+}
+```
+
+---
+
+## Part 6: Action Execution
+
+### File Modified
+- Assets/Editor/AIAssistant/DynamicPlanApplier.cs
+
+### Add to Action Dispatch
+In ApplyPlan() method, after prefab action handling (~line 63), add:
+
+```csharp
+else if (action is ModifyGameObjectAction modifyAction)
+{
+    result = ExecuteModifyGameObject(modifyAction, previewMode);
+}
+else if (action is DeleteGameObjectAction deleteAction)
+{
+    result = ExecuteDeleteGameObject(deleteAction, previewMode);
+}
+```
+
+### Add Executor Methods
+At end of DynamicPlanApplier class, add:
+
+```csharp
+/// <summary>
+/// Modifies an existing GameObject by instanceID.
+/// Applies transform changes and component parameter modifications.
+/// </summary>
+private static ActionResult ExecuteModifyGameObject(ModifyGameObjectAction action, bool previewMode)
+{
+    // Lookup GameObject by instanceID
+    Object obj = EditorUtility.InstanceIDToObject(action.instanceId);
+    GameObject gameObj = obj as GameObject;
+
+    if (gameObj == null)
+    {
+        return new ActionResult
+        {
+            Action = action,
+            Success = false,
+            ErrorMessage = $"GameObject with instanceID {action.instanceId} not found. It may have been deleted or scene reloaded."
+        };
+    }
+
+    if (previewMode)
+    {
+        Debug.Log($"[Preview] Would modify GameObject '{gameObj.name}' (ID: {action.instanceId})");
+        return new ActionResult { Action = action, Success = true };
+    }
+
+    // Record for Undo
+    Undo.RecordObject(gameObj, "AI Assistant Modify GameObject");
+    Undo.RecordObject(gameObj.transform, "AI Assistant Modify Transform");
+
+    // Apply transform modifications (only if specified)
+    if (action.name != null)
+        gameObj.name = action.name;
+
+    if (action.position.HasValue)
+        gameObj.transform.position = action.position.Value;
+
+    if (action.rotation.HasValue)
+        gameObj.transform.rotation = Quaternion.Euler(action.rotation.Value);
+
+    if (action.scale.HasValue)
+        gameObj.transform.localScale = action.scale.Value;
+
+    if (action.active.HasValue)
+        gameObj.SetActive(action.active.Value);
+
+    // Apply component parameters if specified
+    if (action.parameters != null && action.parameters.Count > 0)
+    {
+        foreach (var kvp in action.parameters)
+        {
+            try
+            {
+                // Parse "ComponentType_fieldName" format
+                string[] parts = kvp.Key.Split('_');
+                if (parts.Length < 2)
+                {
+                    Debug.LogWarning($"[AI Assistant] Invalid parameter format: {kvp.Key}");
+                    continue;
+                }
+
+                string componentTypeName = parts[0];
+                string fieldName = string.Join("_", parts, 1, parts.Length - 1);
+
+                // Resolve component type (try bare name, then UnityEngine, then UnityEditor)
+                Type componentType = Type.GetType(componentTypeName);
+                if (componentType == null)
+                    componentType = Type.GetType($"UnityEngine.{componentTypeName}");
+                if (componentType == null)
+                    componentType = Type.GetType($"UnityEditor.{componentTypeName}");
+
+                if (componentType == null)
+                {
+                    Debug.LogWarning($"[AI Assistant] Component type '{componentTypeName}' not found");
+                    continue;
+                }
+
+                // Get component instance
+                Component component = gameObj.GetComponent(componentType);
+                if (component == null)
+                {
+                    Debug.LogWarning($"[AI Assistant] Component '{componentTypeName}' not found on {gameObj.name}");
+                    continue;
+                }
+
+                // Get field via reflection
+                FieldInfo field = componentType.GetField(fieldName,
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+
+                if (field == null)
+                {
+                    Debug.LogWarning($"[AI Assistant] Field '{fieldName}' not found on {componentTypeName}");
+                    continue;
+                }
+
+                // Convert value to field type (reuse existing ConvertValue logic)
+                object convertedValue = ConvertValue(kvp.Value, field.FieldType);
+
+                // Apply value
+                field.SetValue(component, convertedValue);
+
+                Debug.Log($"[AI Assistant] Modified {componentTypeName}.{fieldName} = {convertedValue}");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[AI Assistant] Failed to apply parameter '{kvp.Key}': {ex.Message}");
+                // Continue with other parameters
+            }
+        }
+    }
+
+    // Build rich output JSON
+    string outputJson = BuildGameObjectOutputJson(gameObj);
+
+    return new ActionResult
+    {
+        Action = action,
+        Success = true,
+        InstanceId = gameObj.GetInstanceID(),
+        OutputJson = outputJson
+    };
+}
+
+/// <summary>
+/// Deletes a GameObject by instanceID.
+/// </summary>
+private static ActionResult ExecuteDeleteGameObject(DeleteGameObjectAction action, bool previewMode)
+{
+    // Lookup GameObject by instanceID
+    Object obj = EditorUtility.InstanceIDToObject(action.instanceId);
+    GameObject gameObj = obj as GameObject;
+
+    if (gameObj == null)
+    {
+        return new ActionResult
+        {
+            Action = action,
+            Success = false,
+            ErrorMessage = $"GameObject with instanceID {action.instanceId} not found."
+        };
+    }
+
+    string objectName = gameObj.name;
+
+    if (previewMode)
+    {
+        Debug.Log($"[Preview] Would delete GameObject '{objectName}' (ID: {action.instanceId})");
+        return new ActionResult { Action = action, Success = true };
+    }
+
+    // Delete with Undo support
+    Undo.DestroyObjectImmediate(gameObj);
+
+    Debug.Log($"[AI Assistant] Deleted GameObject '{objectName}'");
+
+    return new ActionResult
+    {
+        Action = action,
+        Success = true,
+        OutputJson = $"{{\\\"status\\\":\\\"success\\\",\\\"deleted\\\":\\\"{EscapeJsonString(objectName)}\\\"}}";
+    };
+}
+
+/// <summary>
+/// Builds rich JSON output for GameObject (includes instanceId, name, transform).
+/// </summary>
+private static string BuildGameObjectOutputJson(GameObject obj)
+{
+    var sb = new StringBuilder();
+    sb.Append("{");
+    sb.Append($"\\\"status\\\":\\\"success\\\",");
+    sb.Append($"\\\"instanceId\\\":{obj.GetInstanceID()},");
+    sb.Append($"\\\"name\\\":\\\"{EscapeJsonString(obj.name)}\\\",");
+
+    // Position
+    var pos = obj.transform.position;
+    sb.Append($"\\\"position\\\":{{\\\"x\\\":{pos.x},\\\"y\\\":{pos.y},\\\"z\\\":{pos.z}}},");
+
+    // Rotation (Euler angles)
+    var rot = obj.transform.eulerAngles;
+    sb.Append($"\\\"rotation\\\":{{\\\"x\\\":{rot.x},\\\"y\\\":{rot.y},\\\"z\\\":{rot.z}}},");
+
+    // Scale
+    var scale = obj.transform.localScale;
+    sb.Append($"\\\"scale\\\":{{\\\"x\\\":{scale.x},\\\"y\\\":{scale.y},\\\"z\\\":{scale.z}}}");
+
+    sb.Append("}");
+    return sb.ToString();
+}
+
+// Note: EscapeJsonString helper already exists in OpenAIClient, may need to make it accessible
+// Or duplicate here: replace \ with \\, " with \", newlines with \n
+```
+
+---
+
+## Conversation Flow Example
+
+### Turn 1: Create
+```
+User: "Create a race car at (10, 0, 5)"
+
+Context sent to AI:
+- Scene objects: [...]
+- Tools: [createRectangle, createCircle, modifyGameObject, deleteGameObject, createVehiclesRaceCar, ...]
+
+AI calls: createVehiclesRaceCar(name="RaceCar", x=10, y=0, z=5, ...)
+
+Tool output returned to AI:
+{
+  "status": "success",
+  "instanceId": 12345,
+  "name": "RaceCar",
+  "position": {"x": 10, "y": 0, "z": 5},
+  "rotation": {"x": 0, "y": 0, "z": 0},
+  "scale": {"x": 1, "y": 1, "z": 1}
+}
+```
+
+### Turn 2: Modify
+```
+User: "Make it red"
+
+Context sent to AI:
+- Previous tool output with instanceId=12345
+- Scene objects: [..., {name: "RaceCar", instanceId: 12345, ...}]
+- Tools: [...]
+
+AI calls: modifyGameObject(instanceId=12345, parameters={"CarController_color": "#FF0000"})
+
+Tool output returned to AI:
+{
+  "status": "success",
+  "instanceId": 12345,
+  "name": "RaceCar",
+  "position": {"x": 10, "y": 0, "z": 5},
+  ...
+}
+```
+
+### Turn 3: Move
+```
+User: "Move it forward 5 units"
+
+AI calls: modifyGameObject(instanceId=12345, position={x: 15, y: 0, z: 5})
+```
+
+### Turn 4: Delete
+```
+User: "Delete it"
+
+AI calls: deleteGameObject(instanceId=12345)
+
+Tool output:
+{
+  "status": "success",
+  "deleted": "RaceCar"
+}
+```
+
+---
+
+## Key Design Decisions
+
+### Why No findGameObjects Tool?
+- AI already receives full scene context with instanceIDs
+- Scene index includes all GameObjects with names, positions, instanceIDs
+- Adding a "find" tool would be redundant
+- AI can identify objects from context directly
+
+### instanceID Limitations
+- Unity instanceIDs are session-only (invalid after scene reload or Unity restart)
+- Acceptable trade-off for MVP - most conversations happen in single session
+- Future: Add PersistentID component for cross-session persistence if needed
+
+### Component Modification Via Reflection
+- Uses "ComponentType_fieldName" format (same as prefab parameters)
+- Generic reflection without metadata (no prefab registry needed)
+- Works with ANY component on ANY GameObject
+- Slightly slower than cached FieldInfo, but acceptable for interactive use
+
+### Tool Output Richness
+- Always include instanceId, name, position, rotation, scale
+- Enables conversation continuity (AI tracks what it created/modified)
+- Enables chaining operations without re-querying scene
+
+### Undo Support
+- All modifications use Undo.RecordObject before changes
+- Delete uses Undo.DestroyObjectImmediate
+- Single undo group for batch operations (inherited from existing pattern)
+
+---
+
+## Implementation Order
+
+1. **Enhance scene indexing** (GameObjectInfo + ProjectIndexer)
+2. **Enhance ActionResult** (add InstanceId, OutputJson fields)
+3. **Create action classes** (ModifyGameObjectAction, DeleteGameObjectAction)
+4. **Add tool definitions** (DynamicToolGenerator methods)
+5. **Add parsing** (OpenAIClient parser methods)
+6. **Add execution** (DynamicPlanApplier executor methods)
+7. **Enhance tool outputs** (OpenAIClient BuildRequestBody)
+8. **Test workflow**: create → modify → delete
+
+---
+
+## Testing Strategy
+
+### Test 1: Create and Modify
+1. Create object: "Create a cube at (0, 0, 0)"
+2. Verify tool output includes instanceId
+3. Modify: "Make it bigger" → should call modifyGameObject with scale
+4. Verify modification applied
+
+### Test 2: Component Parameter Modification
+1. Create prefab with parameters: "Create a race car"
+2. Modify component field: "Set speed to 100" → modifyGameObject(parameters={CarController_maxSpeed: 100})
+3. Verify field value changed
+
+### Test 3: Delete
+1. Create object
+2. Delete: "Delete it" → deleteGameObject(instanceId)
+3. Verify object removed and undo works
+
+### Test 4: Invalid instanceID
+1. Create object, note instanceId
+2. Manually delete from scene
+3. Try to modify → should return error with clear message
+
+### Test 5: Scene Reload
+1. Create objects
+2. Save and reload scene
+3. instanceIDs change → modifications will fail
+4. Document limitation (session-only IDs)
+
+---
+
+## Future Enhancements
+
+### Persistent IDs
+Add PersistentID component for cross-session tracking:
+```csharp
+public class PersistentID : MonoBehaviour
+{
+    public string guid = System.Guid.NewGuid().ToString();
+}
+```
+
+### User Selection Integration
+Allow user to manually select objects in Unity Editor.
+Selected objects get added to context (filtering).
+Reduces context size for large scenes.
+
+### Batch Operations
+Support modifying multiple objects in single call:
+```
+modifyGameObjects(instanceIds=[101, 102, 103], scale={x:2, y:2, z:2})
+```
+
+### Query/Filter in Context
+Add scene context filtering:
+- Only include objects matching criteria
+- Reduce token usage for large scenes
+- User configures filters in settings
