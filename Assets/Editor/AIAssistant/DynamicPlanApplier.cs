@@ -129,7 +129,9 @@ namespace UnityEditor.AIAssistant
             {
                 string prefabName = System.IO.Path.GetFileNameWithoutExtension(action.prefabPath);
                 int paramCount = action.parameters != null ? action.parameters.Count : 0;
-                Debug.Log($"[Preview] Would instantiate prefab '{prefabName}' at ({action.position.x}, {action.position.y}, {action.position.z}) with {paramCount} parameter(s)");
+                Debug.Log($"[Preview] Would instantiate prefab '{prefabName}' named '{action.name}' at position ({action.position.x}, {action.position.y}, {action.position.z}), " +
+                         $"rotation ({action.rotation.x}, {action.rotation.y}, {action.rotation.z}), " +
+                         $"scale ({action.scale.x}, {action.scale.y}, {action.scale.z}) with {paramCount} parameter(s)");
                 return new ActionResult
                 {
                     Action = action,
@@ -150,8 +152,17 @@ namespace UnityEditor.AIAssistant
                 };
             }
 
+            // Set name
+            instance.name = action.name;
+
             // Set position
             instance.transform.position = action.position;
+
+            // Set rotation (convert Euler angles to Quaternion)
+            instance.transform.rotation = Quaternion.Euler(action.rotation);
+
+            // Set scale
+            instance.transform.localScale = action.scale;
 
             // Apply custom parameters (if any)
             if (action.parameters != null && action.parameters.Count > 0)

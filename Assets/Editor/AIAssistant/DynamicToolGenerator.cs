@@ -90,10 +90,23 @@ namespace UnityEditor.AIAssistant
             sb.Append("      \"type\": \"object\",\n");
             sb.Append("      \"properties\": {\n");
 
+            // Name parameter (always present, always required)
+            sb.Append("        \"name\": {\"type\": \"string\", \"description\": \"GameObject name\"},\n");
+
             // Position parameters (always present, always required)
             sb.Append("        \"x\": {\"type\": \"number\", \"description\": \"World X position\"},\n");
             sb.Append("        \"y\": {\"type\": \"number\", \"description\": \"World Y position\"},\n");
-            sb.Append("        \"z\": {\"type\": \"number\", \"description\": \"World Z position\"}");
+            sb.Append("        \"z\": {\"type\": \"number\", \"description\": \"World Z position\"},\n");
+
+            // Rotation parameters (optional, default to 0)
+            sb.Append("        \"rotationX\": {\"type\": \"number\", \"description\": \"Rotation around X axis in degrees (default: 0)\"},\n");
+            sb.Append("        \"rotationY\": {\"type\": \"number\", \"description\": \"Rotation around Y axis in degrees (default: 0)\"},\n");
+            sb.Append("        \"rotationZ\": {\"type\": \"number\", \"description\": \"Rotation around Z axis in degrees (default: 0)\"},\n");
+
+            // Scale parameters (optional, default to 1)
+            sb.Append("        \"scaleX\": {\"type\": \"number\", \"description\": \"Scale along X axis (default: 1.0)\"},\n");
+            sb.Append("        \"scaleY\": {\"type\": \"number\", \"description\": \"Scale along Y axis (default: 1.0)\"},\n");
+            sb.Append("        \"scaleZ\": {\"type\": \"number\", \"description\": \"Scale along Z axis (default: 1.0)\"}");
 
             // Field parameters from components
             if (prefab.components != null)
@@ -113,7 +126,7 @@ namespace UnityEditor.AIAssistant
             }
 
             sb.Append("\n      },\n");
-            sb.Append("      \"required\": [\"x\", \"y\", \"z\"]\n");  // Only position required
+            sb.Append("      \"required\": [\"name\", \"x\", \"y\", \"z\"]\n");  // Name and position required
             sb.Append("    }\n");
             sb.Append("  }");
 

@@ -103,15 +103,10 @@ namespace UnityEditor.AIAssistant
                 return null;
             }
 
-            // Get all MonoBehaviour components
+            // Get all MonoBehaviour components (may be empty for simple prefabs like rocks/trees)
             var components = prefab.GetComponents<MonoBehaviour>();
-            if (components.Length == 0)
-            {
-                Debug.LogWarning($"[AI Assistant] Skipping {prefab.name} - no MonoBehaviours found");
-                return null;
-            }
 
-            // Scan components
+            // Scan components for serialized fields
             List<ComponentMetadata> componentMetas = new List<ComponentMetadata>();
             foreach (var component in components)
             {
@@ -128,11 +123,10 @@ namespace UnityEditor.AIAssistant
                 }
             }
 
-            // Skip prefabs with no serialized fields
+            // Allow prefabs with no parameters - they can still be instantiated at positions
             if (componentMetas.Count == 0)
             {
-                Debug.Log($"[AI Assistant] Skipping {prefab.name} - no serialized fields found");
-                return null;
+                Debug.Log($"[AI Assistant] Including {prefab.name} with position-only parameters (no custom fields)");
             }
 
             // Generate unique function name

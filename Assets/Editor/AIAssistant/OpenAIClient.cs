@@ -533,10 +533,23 @@ namespace UnityEditor.AIAssistant
                     throw new Exception($"No prefab found for function '{functionName}'");
                 }
 
+                // Extract name parameter (always required)
+                string name = args["name"]?.Value ?? "GameObject";
+
                 // Extract position parameters (always required)
                 float x = args["x"].AsFloat;
                 float y = args["y"].AsFloat;
                 float z = args["z"].AsFloat;
+
+                // Extract rotation parameters (optional, default to 0)
+                float rotX = args["rotationX"]?.AsFloat ?? 0f;
+                float rotY = args["rotationY"]?.AsFloat ?? 0f;
+                float rotZ = args["rotationZ"]?.AsFloat ?? 0f;
+
+                // Extract scale parameters (optional, default to 1)
+                float scaleX = args["scaleX"]?.AsFloat ?? 1f;
+                float scaleY = args["scaleY"]?.AsFloat ?? 1f;
+                float scaleZ = args["scaleZ"]?.AsFloat ?? 1f;
 
                 // Extract all other parameters into dictionary
                 Dictionary<string, object> parameters = new Dictionary<string, object>();
@@ -545,8 +558,11 @@ namespace UnityEditor.AIAssistant
                 {
                     string key = kvp.Key;
 
-                    // Skip position parameters (already extracted)
-                    if (key == "x" || key == "y" || key == "z")
+                    // Skip name, position, rotation, and scale parameters (already extracted)
+                    if (key == "name" ||
+                        key == "x" || key == "y" || key == "z" ||
+                        key == "rotationX" || key == "rotationY" || key == "rotationZ" ||
+                        key == "scaleX" || key == "scaleY" || key == "scaleZ")
                     {
                         continue;
                     }
@@ -558,7 +574,10 @@ namespace UnityEditor.AIAssistant
                 return new InstantiatePrefabAction
                 {
                     prefabPath = metadata.prefabPath,
+                    name = name,
                     position = new Vector3(x, y, z),
+                    rotation = new Vector3(rotX, rotY, rotZ),
+                    scale = new Vector3(scaleX, scaleY, scaleZ),
                     parameters = parameters
                 };
             }

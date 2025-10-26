@@ -20,9 +20,26 @@ namespace UnityEditor.AIAssistant
         public string prefabPath;
 
         /// <summary>
+        /// Name for the instantiated GameObject.
+        /// </summary>
+        public string name;
+
+        /// <summary>
         /// World position for the instantiated prefab.
         /// </summary>
         public Vector3 position;
+
+        /// <summary>
+        /// Rotation for the instantiated prefab (Euler angles in degrees).
+        /// Defaults to (0, 0, 0) if not specified.
+        /// </summary>
+        public Vector3 rotation;
+
+        /// <summary>
+        /// Scale for the instantiated prefab.
+        /// Defaults to (1, 1, 1) if not specified.
+        /// </summary>
+        public Vector3 scale;
 
         /// <summary>
         /// Parameter values to apply to prefab components.
@@ -40,7 +57,25 @@ namespace UnityEditor.AIAssistant
             string prefabName = System.IO.Path.GetFileNameWithoutExtension(prefabPath);
 
             int paramCount = parameters != null ? parameters.Count : 0;
-            return $"Create prefab '{prefabName}' at ({position.x:F1}, {position.y:F1}, {position.z:F1}) with {paramCount} parameter(s)";
+
+            // Build description with transform info
+            string desc = $"Create prefab '{prefabName}' named '{name}' at pos ({position.x:F1}, {position.y:F1}, {position.z:F1})";
+
+            // Add rotation if non-zero
+            if (rotation.x != 0 || rotation.y != 0 || rotation.z != 0)
+            {
+                desc += $", rot ({rotation.x:F1}, {rotation.y:F1}, {rotation.z:F1})";
+            }
+
+            // Add scale if not uniform 1
+            if (scale.x != 1 || scale.y != 1 || scale.z != 1)
+            {
+                desc += $", scale ({scale.x:F1}, {scale.y:F1}, {scale.z:F1})";
+            }
+
+            desc += $" with {paramCount} parameter(s)";
+
+            return desc;
         }
 
         /// <summary>
