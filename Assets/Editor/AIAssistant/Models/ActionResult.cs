@@ -29,5 +29,12 @@ namespace UnityEditor.AIAssistant
         /// Null if Success is false or the action doesn't create a GameObject.
         /// </summary>
         public GameObject CreatedObject;
+
+        /// <summary>
+        /// Instance ID of created/modified GameObject.
+        /// Null if action failed or doesn't involve a GameObject.
+        /// Used for tracking objects across conversation turns.
+        /// </summary>
+        public int? InstanceId;
     }
 }

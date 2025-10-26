@@ -81,13 +81,10 @@ namespace UnityEditor.AIAssistant
 
         /// <summary>
         /// Indexes all scenes in the project (not just build settings).
-        /// Preserves current scene setup and restores it after indexing.
+        /// Opens scenes additively to inspect them, then closes them without saving.
         /// </summary>
         public static void IndexScenes()
         {
-            // Save current scene setup to restore later
-            SceneSetup[] originalSetup = EditorSceneManager.GetSceneManagerSetup();
-
             try
             {
                 // Find ALL scene files in project (not just build settings)
@@ -128,7 +125,10 @@ namespace UnityEditor.AIAssistant
                                 name = go.name,
                                 active = go.activeInHierarchy,
                                 position = new Vector3Serializable(go.transform.position),
-                                childCount = go.transform.childCount
+                                rotation = new Vector3Serializable(go.transform.eulerAngles),
+                                scale = new Vector3Serializable(go.transform.localScale),
+                                childCount = go.transform.childCount,
+                                instanceId = go.GetInstanceID()
                             });
                         }
 
@@ -154,13 +154,9 @@ namespace UnityEditor.AIAssistant
                     }
                 }
             }
-            finally
+            catch (Exception ex)
             {
-                // Always restore original scene setup, even if indexing failed
-                if (originalSetup != null && originalSetup.Length > 0)
-                {
-                    EditorSceneManager.RestoreSceneManagerSetup(originalSetup);
-                }
+                Debug.LogError($"[AI Assistant] Failed to index scenes: {ex.Message}");
             }
         }
 
@@ -345,7 +341,7 @@ namespace UnityEditor.AIAssistant
     }
 
     /// <summary>
-    /// GameObject information (name, active state, position, child count).
+    /// GameObject information (name, active state, position, rotation, scale, child count, instanceId).
     /// </summary>
     [Serializable]
     public class GameObjectInfo
@@ -353,7 +349,10 @@ namespace UnityEditor.AIAssistant
         public string name;
         public bool active;
         public Vector3Serializable position;
+        public Vector3Serializable rotation;  // Euler angles
+        public Vector3Serializable scale;     // Local scale
         public int childCount;
+        public int instanceId;                // For object identification (session-only)
     }
 
     /// <summary>

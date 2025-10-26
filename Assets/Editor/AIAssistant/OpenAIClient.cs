@@ -125,6 +125,10 @@ namespace UnityEditor.AIAssistant
                     string outputContent;
                     if (result.Success)
                     {
+                        // Include instanceId and name in success output
+                        // instanceId is required (throws if null - that's our bug to fix)
+                        int instanceId = result.InstanceId.Value;
+
                         // Safely get object name (might be null or destroyed)
                         string objectName = "unknown";
                         if (result.CreatedObject != null)
@@ -138,7 +142,8 @@ namespace UnityEditor.AIAssistant
                                 objectName = "destroyed";
                             }
                         }
-                        outputContent = $"{{\\\"status\\\": \\\"success\\\", \\\"objectName\\\": \\\"{EscapeJsonString(objectName)}\\\"}}";
+
+                        outputContent = $"{{\\\"status\\\": \\\"success\\\", \\\"instanceId\\\": {instanceId}, \\\"name\\\": \\\"{EscapeJsonString(objectName)}\\\"}}";
                     }
                     else
                     {
@@ -451,6 +456,30 @@ namespace UnityEditor.AIAssistant
                     action.callId = callId;
                     plan.Actions.Add(action);
                 }
+                else if (functionName == "modifyGameObject")
+                {
+                    var action = ParseModifyGameObjectAction(args);
+                    action.callId = callId;
+                    plan.Actions.Add(action);
+                }
+                else if (functionName == "deleteGameObject")
+                {
+                    var action = ParseDeleteGameObjectAction(args);
+                    action.callId = callId;
+                    plan.Actions.Add(action);
+                }
+                else if (functionName == "addComponent")
+                {
+                    var action = ParseAddComponentAction(args);
+                    action.callId = callId;
+                    plan.Actions.Add(action);
+                }
+                else if (functionName == "removeComponent")
+                {
+                    var action = ParseRemoveComponentAction(args);
+                    action.callId = callId;
+                    plan.Actions.Add(action);
+                }
                 else if (functionName.StartsWith("create"))
                 {
                     // Dynamic prefab function (e.g., "createVehiclesRaceCar")
@@ -584,6 +613,147 @@ namespace UnityEditor.AIAssistant
             catch (Exception ex)
             {
                 throw new Exception($"Invalid prefab parameters for {functionName}: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Parses modifyGameObject function arguments into ModifyGameObjectAction.
+        /// </summary>
+        private static ModifyGameObjectAction ParseModifyGameObjectAction(JSONNode args)
+        {
+            try
+            {
+                var action = new ModifyGameObjectAction
+                {
+                    instanceId = args["instanceId"].AsInt
+                };
+
+                // Optional string fields
+                if (args["name"] != null)
+                    action.name = args["name"].Value;
+
+                // Optional bool field
+                if (args["active"] != null)
+                    action.active = args["active"].AsBool;
+
+                // Optional position
+                var posNode = args["position"];
+                if (posNode != null)
+                {
+                    action.position = new Vector3(
+                        posNode["x"].AsFloat,
+                        posNode["y"].AsFloat,
+                        posNode["z"].AsFloat
+                    );
+                }
+
+                // Optional rotation (Euler angles)
+                var rotNode = args["rotation"];
+                if (rotNode != null)
+                {
+                    action.rotation = new Vector3(
+                        rotNode["x"].AsFloat,
+                        rotNode["y"].AsFloat,
+                        rotNode["z"].AsFloat
+                    );
+                }
+
+                // Optional scale
+                var scaleNode = args["scale"];
+                if (scaleNode != null)
+                {
+                    action.scale = new Vector3(
+                        scaleNode["x"].AsFloat,
+                        scaleNode["y"].AsFloat,
+                        scaleNode["z"].AsFloat
+                    );
+                }
+
+                // Optional component parameters
+                var paramsNode = args["parameters"];
+                if (paramsNode != null && paramsNode.Count > 0)
+                {
+                    action.parameters = new Dictionary<string, object>();
+                    foreach (var kvp in paramsNode)
+                    {
+                        action.parameters[kvp.Key] = kvp.Value;
+                    }
+                }
+
+                return action;
+            }
+            catch (Exception ex)
+            {
+                throw new Exception($"Invalid modifyGameObject parameters: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Parses deleteGameObject function arguments into DeleteGameObjectAction.
+        /// </summary>
+        private static DeleteGameObjectAction ParseDeleteGameObjectAction(JSONNode args)
+        {
+            try
+            {
+                return new DeleteGameObjectAction
+                {
+                    instanceId = args["instanceId"].AsInt
+                };
+            }
+            catch (Exception ex)
+            {
+                throw new Exception($"Invalid deleteGameObject parameters: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Parses addComponent function arguments into AddComponentAction.
+        /// </summary>
+        private static AddComponentAction ParseAddComponentAction(JSONNode args)
+        {
+            try
+            {
+                var action = new AddComponentAction
+                {
+                    instanceId = args["instanceId"].AsInt,
+                    componentType = args["componentType"].Value
+                };
+
+                // Optional component parameters
+                var paramsNode = args["parameters"];
+                if (paramsNode != null && paramsNode.Count > 0)
+                {
+                    action.parameters = new Dictionary<string, object>();
+                    foreach (var kvp in paramsNode)
+                    {
+                        action.parameters[kvp.Key] = kvp.Value;
+                    }
+                }
+
+                return action;
+            }
+            catch (Exception ex)
+            {
+                throw new Exception($"Invalid addComponent parameters: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Parses removeComponent function arguments into RemoveComponentAction.
+        /// </summary>
+        private static RemoveComponentAction ParseRemoveComponentAction(JSONNode args)
+        {
+            try
+            {
+                return new RemoveComponentAction
+                {
+                    instanceId = args["instanceId"].AsInt,
+                    componentType = args["componentType"].Value
+                };
+            }
+            catch (Exception ex)
+            {
+                throw new Exception($"Invalid removeComponent parameters: {ex.Message}");
             }
         }
     }

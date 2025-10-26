@@ -164,7 +164,8 @@ namespace UnityEditor.AIAssistant
             {
                 Action = action,
                 Success = true,
-                CreatedObject = go
+                CreatedObject = go,
+                InstanceId = go.GetInstanceID()
             };
         }
 
@@ -241,7 +242,8 @@ namespace UnityEditor.AIAssistant
             {
                 Action = action,
                 Success = true,
-                CreatedObject = go
+                CreatedObject = go,
+                InstanceId = go.GetInstanceID()
             };
         }
 
