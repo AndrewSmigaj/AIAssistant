@@ -1,0 +1,915 @@
+# Unity AI Assistant Plugin - Architecture Specification
+# Version: 0.1.0
+# Last Updated: 2025-10-25
+
+metadata:
+  project_name: "Unity AI Assistant"
+  version: "0.1.0"
+  unity_version: "6.2"
+  target: "Editor-only plugin"
+  purpose: "Conversational AI interface for understanding and modifying Unity scenes via OpenAI Responses API"
+  license: "MIT"
+
+architectural_decisions:
+
+  json_library:
+    choice: "SimpleJSON"
+    rationale: "Single-file lightweight parser; zero dependencies; handles polymorphic responses with manual parsing; perfect for prototype; MIT licensed"
+    source: "https://github.com/Bunny83/SimpleJSON"
+    file: "Assets/Editor/AIAssistant/Utilities/SimpleJSON.cs"
+    approach: "Manual parsing with type discrimination via 'type' field"
+
+  artifact_storage:
+    location: "Library/AIAssistant/"
+    rationale: "Standard Unity practice; auto-ignored by git; regenerates on Library rebuild; prevents repo pollution"
+    structure:
+      - "Library/AIAssistant/Artifacts/Scenes/"
+      - "Library/AIAssistant/Artifacts/Scripts/"
+      - "Library/AIAssistant/Artifacts/Project/"
+
+  api_key_storage:
+    choice: "EditorPrefs (per-machine)"
+    rationale: "Never committed to git; each developer uses their own key; standard Unity practice for secrets"
+    key_name: "AIAssistant_OpenAI_APIKey"
+
+  async_strategy:
+    choice: "Blocking with progress bar + exception safety"
+    rationale: "Simplest for prototype; EditorUtility.DisplayProgressBar with try/finally; can refactor to async/await later"
+    exception_handling: "Always use try/finally to ensure ClearProgressBar() is called"
+
+  indexer_trigger:
+    choice: "Before API call (if dirty) + on scene save + manual button"
+    rationale: "Ensures AI always sees fresh state; prevents desync; auto-index on save as optimization"
+    hooks:
+      - "EditorSceneManager.sceneSaved (if auto_index_on_save enabled)"
+      - "Before API call: check isDirty, re-index if needed"
+      - "Manual 'Refresh Index' button in UI"
+
+  conversation_state_consistency:
+    choice: "Re-index immediately after action execution"
+    rationale: "Prevents desync when user partially approves actions; ensures next prompt sees actual scene state"
+    implementation: "Call ProjectIndexer.IndexAll() after PlanApplier.ApplyPlan()"
+
+  error_handling:
+    choice: "Display in log area + per-action failure tracking"
+    rationale: "Non-intrusive; contextual; preserves error history in UI; partial execution supported"
+
+  testing_strategy:
+    choice: "No automated tests for Day 1"
+    rationale: "Prototype velocity; manual testing sufficient; add Unity Test Framework later"
+
+  conversation_state:
+    choice: "previous_response_id with store:true"
+    rationale: "Essential for iterative refinement ('make it bigger'); enables multi-turn conversations; GPT-5 reasoning persistence; trivial to implement"
+    day_1_priority: "HIGH - enables natural conversation flow"
+
+  approval_flow:
+    choice: "Checkbox list with bulk approve"
+    rationale: "User safety; flexibility to cherry-pick actions; non-blocking UI; matches ChatGPT UX pattern"
+    rejection_handling: "Silent (no API feedback); user can refine with new prompt; conversation state preserved"
+
+components:
+
+  # Component 1: AI Assistant Window
+  ai_assistant_window:
+    file: "Assets/Editor/AIAssistant/AIAssistantWindow.cs"
+    type: "EditorWindow"
+    namespace: "UnityEditor.AIAssistant"
+
+    responsibilities:
+      - "Dockable editor window UI"
+      - "Text prompt input field with submit button"
+      - "Scrollable log area (displays messages, errors, results)"
+      - "Pending actions approval UI (checkbox list)"
+      - "Execute Selected / Reject All buttons"
+      - "Manual 'Refresh Index' and 'Clear Conversation' buttons"
+      - "Settings access (inline or menu)"
+      - "Conversation state management (previous_response_id)"
+      - "Exception-safe progress bar handling"
+
+    menu_path: "Window/AI Assistant"
+
+    dependencies:
+      - "AIAssistantSettings"
+      - "ProjectIndexer"
+      - "ContextBuilder"
+      - "OpenAIClient"
+      - "PlanApplier"
+
+    state_management:
+      last_response_id:
+        type: "string"
+        description: "ID from last API response; passed as previous_response_id in next request"
+        lifetime: "Persists across prompts in same session; cleared on window close or manual clear"
+
+      pending_actions:
+        type: "List<IAction>"
+        description: "Actions awaiting user approval"
+        lifetime: "Set after API response; cleared after execute/reject"
+
+      action_checkboxes:
+        type: "bool[]"
+        description: "User selection state for each pending action"
+        lifetime: "Synchronized with pending_actions array"
+
+    ui_layout:
+      sections:
+        - name: "Header"
+          content: "Title, manual refresh button, clear conversation button"
+
+        - name: "Log Area"
+          content: "Scrollable; displays messages, errors, execution results; color-coded by type"
+
+        - name: "Pending Actions (conditional)"
+          content: "Only visible when pending_actions != null; shows checkbox list + Execute/Reject buttons"
+          example: |
+            ☐ Create rectangle "RedBox" at (0, 0) - 2x1 units - color #FF0000
+            ☐ Create circle "BlueCircle" at (3, 0) - radius 1.5 - color #0000FF
+            [Execute Selected] [Reject All]
+
+        - name: "Prompt Input"
+          content: "Multi-line text field + Submit button"
+
+    key_methods:
+      - "OnEnable(): Load settings, subscribe to EditorSceneManager.sceneSaved"
+      - "OnDisable(): Unsubscribe events"
+      - "OnGUI(): Render all UI sections"
+      - "OnSubmitPrompt(): Main flow - index (if dirty) → build context → API call → display results"
+      - "OnExecuteSelected(): Apply checked actions via PlanApplier, re-index, clear pending state"
+      - "OnRejectAll(): Clear pending actions, log rejection"
+      - "OnRefreshIndex(): Manual indexer trigger"
+      - "OnClearConversation(): Clear _lastResponseId, log clear message"
+      - "AppendLog(string message, LogType type): Add timestamped entry to log"
+      - "DisplayPendingActions(): Render checkbox list UI"
+
+    flow_diagram: |
+      User types prompt → OnSubmitPrompt()
+        ↓
+      try {
+        1. Show progress bar "Checking scene state..."
+        2. if (EditorSceneManager.GetActiveScene().isDirty)
+             ProjectIndexer.IndexAll() // Ensure fresh state
+        3. Show progress bar "Building context..."
+        4. ContextBuilder.BuildContextPack(prompt, artifacts, tokenBudget)
+        5. Show progress bar "Calling OpenAI API..."
+        6. OpenAIClient.SendRequest(apiKey, model, contextPack, prompt, _lastResponseId)
+      } finally {
+        7. EditorUtility.ClearProgressBar() // Always clear
+      }
+        ↓
+      Parse ActionPlan:
+        ├─ If plan.Success == false:
+        │    └─ AppendLog(plan.ErrorMessage, LogType.Error)
+        ├─ If plan.Message != null:
+        │    └─ AppendLog(plan.Message, LogType.Log)
+        └─ If plan.Actions.Count > 0:
+             ├─ Set _pendingActions = plan.Actions
+             ├─ Initialize _actionCheckboxes = new bool[plan.Actions.Count]
+             └─ Repaint() to show approval UI
+        ↓
+      Save _lastResponseId = plan.ResponseId
+        ↓
+      User reviews pending actions:
+        ├─ Checks desired actions
+        └─ Clicks "Execute Selected"
+             ↓
+           OnExecuteSelected():
+             1. Filter checked actions
+             2. var results = PlanApplier.ApplyPlan(selectedActions, previewMode=false)
+             3. ProjectIndexer.IndexAll() // Re-index to prevent desync
+             4. Log each result: "✓ Created RedRectangle" or "✗ Failed: invalid color"
+             5. AppendLog($"Executed {successCount}/{totalCount} actions", LogType.Log)
+             6. Clear _pendingActions and _actionCheckboxes
+
+  # Component 2: Settings
+  ai_assistant_settings:
+    file: "Assets/Editor/AIAssistant/AIAssistantSettings.cs"
+    type: "ScriptableObject"
+    namespace: "UnityEditor.AIAssistant"
+
+    responsibilities:
+      - "Store user preferences (non-secret)"
+      - "Load/save API key from EditorPrefs"
+      - "Validate settings"
+
+    fields:
+      api_key:
+        type: "string (property)"
+        storage: "EditorPrefs['AIAssistant_OpenAI_APIKey']"
+        default: ""
+        validation: "Non-empty (minimal validation for Day 1)"
+        security: "NEVER serialize to asset; always use EditorPrefs"
+
+      model:
+        type: "string"
+        storage: "ScriptableObject"
+        default: "gpt-4o"
+        options: ["gpt-4o", "gpt-4.1", "gpt-4.1-nano"]
+
+      preview_mode:
+        type: "bool"
+        storage: "ScriptableObject"
+        default: false
+        description: "If true, log actions but don't execute (safety mode)"
+
+      token_budget:
+        type: "int"
+        storage: "ScriptableObject"
+        default: 8000
+        description: "Max tokens for context pack (approximate)"
+
+      auto_index_on_save:
+        type: "bool"
+        storage: "ScriptableObject"
+        default: true
+        description: "Automatically refresh index when scene is saved"
+
+    singleton_access: "AIAssistantSettings.GetOrCreateSettings()"
+    asset_path: "Assets/Editor/AIAssistant/Settings/AIAssistantSettings.asset"
+
+    key_methods:
+      - "GetOrCreateSettings(): static AIAssistantSettings"
+      - "ValidateAPIKey(): bool - Check non-empty"
+      - "SaveAPIKey(string key): void - Writes to EditorPrefs"
+      - "LoadAPIKey(): string - Reads from EditorPrefs"
+
+  # Component 3: Project Indexer
+  project_indexer:
+    file: "Assets/Editor/AIAssistant/ProjectIndexer.cs"
+    type: "Static class"
+    namespace: "UnityEditor.AIAssistant"
+
+    responsibilities:
+      - "Scan project and generate JSON artifacts"
+      - "Compute SHA256 hash of each artifact"
+      - "Write artifact only if hash changed (performance)"
+      - "Index scenes, scripts, project metadata"
+
+    artifact_types:
+      scenes:
+        output: "Library/AIAssistant/Artifacts/Scenes/{sceneName}.json"
+        content:
+          - "Scene name and path"
+          - "Root GameObjects (name, active state, position, children)"
+          - "No components (Day 1 scope limit)"
+        example: |
+          {
+            "sceneName": "SampleScene",
+            "scenePath": "Assets/Scenes/SampleScene.unity",
+            "rootObjects": [
+              { "name": "Main Camera", "active": true, "position": {"x": 0, "y": 1, "z": -10}, "childCount": 0 },
+              { "name": "Directional Light", "active": true, "position": {"x": 0, "y": 3, "z": 0}, "childCount": 0 }
+            ]
+          }
+
+      scripts:
+        output: "Library/AIAssistant/Artifacts/Scripts/AllScripts.json"
+        content:
+          - "Script paths under Assets/"
+          - "Class names (parsed via regex or simple heuristic)"
+          - "Namespace (if detectable)"
+        example: |
+          {
+            "scripts": [
+              { "path": "Assets/Scripts/PlayerController.cs", "className": "PlayerController", "namespace": "Game" },
+              { "path": "Assets/Scripts/GameManager.cs", "className": "GameManager", "namespace": "Game" }
+            ]
+          }
+
+      project:
+        output: "Library/AIAssistant/Artifacts/Project/ProjectMetadata.json"
+        content:
+          - "Unity version"
+          - "Product name"
+          - "Project path"
+          - "Active scene"
+        example: |
+          {
+            "unityVersion": "6.2.0f1",
+            "productName": "My Unity Project",
+            "projectPath": "/Users/dev/MyProject",
+            "activeScene": "Assets/Scenes/SampleScene.unity"
+          }
+
+    key_methods:
+      - "IndexAll(): void - Indexes scenes, scripts, project"
+      - "IndexScenes(): void - Iterate EditorBuildSettings.scenes, load, serialize"
+      - "IndexScripts(): void - Find all .cs files in Assets/, parse class names"
+      - "IndexProject(): void - Serialize Application/PlayerSettings metadata"
+      - "ComputeHash(string json): string - SHA256 hash"
+      - "WriteArtifactIfChanged(string path, string json): bool - Compare hash, write if different"
+      - "EnsureDirectoryExists(string path): void - Create directory if missing"
+
+  # Component 4: Context Builder
+  context_builder:
+    file: "Assets/Editor/AIAssistant/ContextBuilder.cs"
+    type: "Static class"
+    namespace: "UnityEditor.AIAssistant"
+
+    responsibilities:
+      - "Read artifacts from Library/AIAssistant/Artifacts/"
+      - "Combine with user prompt and instructions"
+      - "Enforce token budget (truncate if needed)"
+      - "Format into 'Context Pack v0.1'"
+
+    context_pack_format:
+      version: "0.1"
+      structure: |
+        You are a Unity scene assistant with the following capabilities:
+
+        Tools Available:
+        - createRectangle: Creates a rectangle sprite GameObject at world position
+        - createCircle: Creates a circle sprite GameObject at world position
+
+        Instructions:
+        - All positions are in Unity world coordinates
+        - Colors must be hex format (#RRGGBB)
+        - Be helpful and conversational
+        - If uncertain, ask clarifying questions
+
+        ---
+        Context Pack v0.1
+
+        ## Project Metadata
+        {projectMetadata JSON}
+
+        ## Active Scene
+        {activeScene JSON}
+
+        ## Scripts
+        {allScripts JSON (truncated if needed)}
+
+        ---
+        User Request: {userPrompt}
+
+      note: "Plain text format (not JSON) for better readability by AI; includes explicit tool instructions"
+
+    token_estimation:
+      method: "Approximate: 1 token ~= 4 characters"
+      enforcement: "If estimated tokens > budget, truncate allScripts array first, then scene rootObjects"
+
+    key_methods:
+      - "BuildContextPack(string userPrompt, int tokenBudget): string"
+      - "ReadArtifact(string path): string - Read JSON file or return empty if missing"
+      - "EstimateTokens(string text): int - Simple char count / 4"
+      - "TruncateScriptsList(string scriptsJson, int maxTokens): string"
+
+  # Component 5: OpenAI Client
+  openai_client:
+    file: "Assets/Editor/AIAssistant/OpenAIClient.cs"
+    type: "Class"
+    namespace: "UnityEditor.AIAssistant"
+
+    responsibilities:
+      - "Call https://api.openai.com/v1/responses"
+      - "Use UnityWebRequest (synchronous for Day 1)"
+      - "Parse JSON response with SimpleJSON"
+      - "Extract message items and function_call items from polymorphic response"
+      - "Return structured ActionPlan"
+      - "Never log API key or Authorization header"
+      - "Support previous_response_id for conversation state"
+
+    api_endpoint: "https://api.openai.com/v1/responses"
+
+    request_format:
+      method: "POST"
+      headers:
+        Content-Type: "application/json"
+        Authorization: "Bearer {apiKey}"
+      body: |
+        {
+          "model": "gpt-4o",
+          "input": "{contextPack}",
+          "store": true,
+          "previous_response_id": "{previousResponseId}",  // Optional; omit if null
+          "tools": [
+            {
+              "type": "function",
+              "name": "createRectangle",
+              "description": "Creates a rectangle sprite GameObject in the scene at the specified world position",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string", "description": "GameObject name" },
+                  "x": { "type": "number", "description": "World X position" },
+                  "y": { "type": "number", "description": "World Y position" },
+                  "width": { "type": "number", "description": "Width in world units" },
+                  "height": { "type": "number", "description": "Height in world units" },
+                  "color": { "type": "string", "description": "Hex color like #FF0000" }
+                },
+                "required": ["name", "x", "y", "width", "height", "color"]
+              }
+            },
+            {
+              "type": "function",
+              "name": "createCircle",
+              "description": "Creates a circle sprite GameObject in the scene at the specified world position",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string", "description": "GameObject name" },
+                  "x": { "type": "number", "description": "World X position" },
+                  "y": { "type": "number", "description": "World Y position" },
+                  "radius": { "type": "number", "description": "Radius in world units" },
+                  "color": { "type": "string", "description": "Hex color like #00FF00" }
+                },
+                "required": ["name", "x", "y", "radius", "color"]
+              }
+            }
+          ]
+        }
+
+    response_format:
+      description: "Polymorphic items array containing reasoning, messages, and function_call items"
+      example: |
+        {
+          "id": "resp_abc123",
+          "object": "response",
+          "items": [
+            { "type": "message", "role": "assistant", "content": "I'll create a red rectangle for you." },
+            {
+              "type": "function_call",
+              "id": "call_xyz",
+              "function": {
+                "name": "createRectangle",
+                "arguments": "{\"name\":\"RedRectangle\",\"x\":0,\"y\":0,\"width\":2,\"height\":1,\"color\":\"#FF0000\"}"
+              }
+            }
+          ]
+        }
+
+    parsing_strategy_simplejson: |
+      var json = JSON.Parse(responseText);
+      var responseId = json["id"];
+      var items = json["items"].AsArray;
+
+      foreach (var item in items)
+      {
+          string type = item["type"];
+          if (type == "message")
+          {
+              string content = item["content"];
+              actionPlan.Message += content;
+          }
+          else if (type == "function_call")
+          {
+              string functionName = item["function"]["name"];
+              string argsJson = item["function"]["arguments"];
+              var args = JSON.Parse(argsJson);
+
+              if (functionName == "createRectangle")
+              {
+                  actionPlan.Actions.Add(new CreateRectangleAction {
+                      name = args["name"],
+                      x = args["x"].AsFloat,
+                      y = args["y"].AsFloat,
+                      width = args["width"].AsFloat,
+                      height = args["height"].AsFloat,
+                      color = args["color"]
+                  });
+              }
+              else if (functionName == "createCircle")
+              {
+                  actionPlan.Actions.Add(new CreateCircleAction {
+                      name = args["name"],
+                      x = args["x"].AsFloat,
+                      y = args["y"].AsFloat,
+                      radius = args["radius"].AsFloat,
+                      color = args["color"]
+                  });
+              }
+          }
+      }
+
+    error_handling:
+      network_errors: "Catch UnityWebRequest errors, return ActionPlan with Success=false, ErrorMessage"
+      rate_limits: "Parse 429 response, return 'Rate limited, try again later'"
+      malformed_json: "Catch exception, return 'Invalid API response'"
+      invalid_function_args: "Catch parse errors, skip invalid actions, log warning"
+
+    security:
+      - "NEVER log API key"
+      - "NEVER log Authorization header"
+      - "Sanitize all logged request/response data"
+
+    key_methods:
+      - "SendRequest(string apiKey, string model, string contextPack, string userPrompt, string previousResponseId = null): ActionPlan"
+      - "BuildRequestBody(string model, string contextPack, string userPrompt, string previousResponseId): string"
+      - "ParseResponse(string jsonResponse): ActionPlan - Uses SimpleJSON"
+      - "ExtractMessageItems(JSONNode response): string"
+      - "ExtractFunctionCalls(JSONNode response): List<IAction>"
+
+  # Component 6: Plan Applier
+  plan_applier:
+    file: "Assets/Editor/AIAssistant/PlanApplier.cs"
+    type: "Static class"
+    namespace: "UnityEditor.AIAssistant"
+
+    responsibilities:
+      - "Execute approved actions"
+      - "Create GameObjects in scene"
+      - "All actions in single Undo group"
+      - "Respect preview mode (log but don't execute)"
+      - "Reuse textures for shapes (performance)"
+      - "Track success/failure per action"
+      - "Handle GameObject name collisions"
+
+    action_types:
+      create_rectangle:
+        steps:
+          - "Validate parameters (non-negative dimensions, valid color)"
+          - "Check for name collision, append number if needed"
+          - "Create new GameObject with unique name"
+          - "Add SpriteRenderer component"
+          - "Generate rectangle sprite (or reuse cached texture)"
+          - "Parse hex color → Color (with error handling)"
+          - "Set sprite.color"
+          - "Set transform.position (x, y, 0)"
+          - "Scale sprite to match width/height"
+          - "Register with Undo"
+
+      create_circle:
+        steps:
+          - "Validate parameters (non-negative radius, valid color)"
+          - "Check for name collision, append number if needed"
+          - "Create new GameObject with unique name"
+          - "Add SpriteRenderer component"
+          - "Generate circle sprite (or reuse cached texture)"
+          - "Parse hex color → Color (with error handling)"
+          - "Set sprite.color"
+          - "Set transform.position (x, y, 0)"
+          - "Scale sprite to match radius"
+          - "Register with Undo"
+
+    texture_cache:
+      description: "Static dictionary to reuse generated textures"
+      keys: "Shape type identifier"
+      example: "rectangleTexture (64x64 white), circleTexture (64x64 white circle)"
+      scaling: "Textures are white; color applied via SpriteRenderer.color; scale applied via Transform"
+      note: "Use 64x64 base to avoid pixelation when scaled"
+
+    undo_strategy:
+      - "Undo.IncrementCurrentGroup()"
+      - "int undoGroup = Undo.GetCurrentGroup()"
+      - "For each action: Undo.RegisterCreatedObjectUndo(gameObject, 'AI Assistant Actions')"
+      - "Undo.CollapseUndoOperations(undoGroup)"
+      - "Result: Single undo step removes all created objects"
+
+    preview_mode:
+      - "If previewMode == true, log action details but skip GameObject.Instantiate"
+
+    partial_failure_handling:
+      return_type: "List<ActionResult>"
+      structure: "{ IAction action, bool success, string errorMessage }"
+      logging: "Log each: '✓ Created RedRectangle' or '✗ Failed to create BlueCircle: Invalid color format'"
+
+    key_methods:
+      - "ApplyPlan(List<IAction> actions, bool previewMode): List<ActionResult>"
+      - "CreateRectangleGameObject(CreateRectangleAction action): ActionResult"
+      - "CreateCircleGameObject(CreateCircleAction action): ActionResult"
+      - "GetOrCreateRectangleTexture(): Texture2D - Returns 64x64 white texture"
+      - "GetOrCreateCircleTexture(): Texture2D - Returns 64x64 white circle texture"
+      - "ParseHexColor(string hex): (bool success, Color color)"
+      - "GetUniqueGameObjectName(string baseName): string - Handle collisions"
+
+data_models:
+
+  action_plan:
+    file: "Assets/Editor/AIAssistant/Models/ActionPlan.cs"
+    description: "Container for parsed OpenAI response"
+    fields:
+      - "string ResponseId - ID from OpenAI response for previous_response_id"
+      - "string Message - Concatenated message items from AI"
+      - "List<IAction> Actions - Parsed function_call items"
+      - "bool Success - True if API call succeeded"
+      - "string ErrorMessage - Error details if Success=false"
+
+  action_result:
+    file: "Assets/Editor/AIAssistant/Models/ActionResult.cs"
+    description: "Result of executing a single action"
+    fields:
+      - "IAction Action - The action that was attempted"
+      - "bool Success - True if executed successfully"
+      - "string ErrorMessage - Error details if Success=false"
+      - "GameObject CreatedObject - Reference to created object (if success)"
+
+  actions:
+    base_interface:
+      file: "Assets/Editor/AIAssistant/Actions/IAction.cs"
+      methods:
+        - "string GetDescription() - Human-readable description for approval UI"
+
+    implementations:
+      - name: "CreateRectangleAction"
+        file: "Assets/Editor/AIAssistant/Actions/CreateRectangleAction.cs"
+        fields: "string name, float x, float y, float width, float height, string color"
+        description_example: "Create rectangle 'RedBox' at (0, 0) - 2x1 units - color #FF0000"
+
+      - name: "CreateCircleAction"
+        file: "Assets/Editor/AIAssistant/Actions/CreateCircleAction.cs"
+        fields: "string name, float x, float y, float radius, string color"
+        description_example: "Create circle 'BlueCircle' at (3, 0) - radius 1.5 - color #0000FF"
+
+file_structure:
+  root:
+    - "ARCHITECTURE.yaml (this file)"
+    - "TODO.md"
+    - ".gitignore (ignore Library/)"
+
+  assets_editor_aiassistant:
+    path: "Assets/Editor/AIAssistant/"
+    files:
+      - "AIAssistant.asmdef"
+      - "AIAssistantWindow.cs"
+      - "AIAssistantSettings.cs"
+      - "ProjectIndexer.cs"
+      - "ContextBuilder.cs"
+      - "OpenAIClient.cs"
+      - "PlanApplier.cs"
+
+    subdirectories:
+      actions:
+        - "IAction.cs"
+        - "CreateRectangleAction.cs"
+        - "CreateCircleAction.cs"
+
+      models:
+        - "ActionPlan.cs"
+        - "ActionResult.cs"
+
+      settings:
+        - "AIAssistantSettings.asset (ScriptableObject instance)"
+
+      utilities:
+        - "SimpleJSON.cs (MIT license, from https://github.com/Bunny83/SimpleJSON)"
+
+  library_aiassistant:
+    path: "Library/AIAssistant/"
+    note: "Generated at runtime, ignored by git"
+    structure:
+      - "Artifacts/"
+      - "Artifacts/Scenes/"
+      - "Artifacts/Scripts/"
+      - "Artifacts/Project/"
+
+assembly_definition:
+  name: "UnityEditor.AIAssistant"
+  path: "Assets/Editor/AIAssistant/AIAssistant.asmdef"
+  content: |
+    {
+      "name": "UnityEditor.AIAssistant",
+      "references": [],
+      "includePlatforms": ["Editor"],
+      "excludePlatforms": [],
+      "allowUnsafeCode": false,
+      "overrideReferences": false,
+      "precompiledReferences": [],
+      "autoReferenced": false,
+      "defineConstraints": [],
+      "versionDefines": [],
+      "noEngineReferences": false
+    }
+
+dependencies:
+  unity_packages:
+    - name: "com.unity.2d.sprite"
+      reason: "SpriteRenderer component"
+    - name: "Built-in Unity editor APIs"
+      reason: "EditorWindow, EditorGUI, EditorUtility, Undo, EditorPrefs, etc."
+
+  third_party_code:
+    - name: "SimpleJSON"
+      version: "Latest from GitHub"
+      license: "MIT"
+      source: "https://github.com/Bunny83/SimpleJSON"
+      file: "Assets/Editor/AIAssistant/Utilities/SimpleJSON.cs"
+      reason: "Lightweight JSON parser with zero dependencies; handles polymorphic responses"
+
+  dotnet_libraries:
+    - name: "System.Security.Cryptography"
+      reason: "SHA256 hashing for artifact change detection"
+    - name: "UnityEngine.Networking (UnityWebRequest)"
+      reason: "HTTP requests to OpenAI API"
+
+  external_apis:
+    - name: "OpenAI Responses API"
+      endpoint: "https://api.openai.com/v1/responses"
+      documentation: "https://platform.openai.com/docs/api-reference/responses"
+      models: "gpt-4o, gpt-4.1, gpt-4.1-nano"
+
+security_model:
+  api_key_handling:
+    storage: "EditorPrefs (per-machine, never committed)"
+    validation: "Non-empty check (minimal for Day 1)"
+    logging: "NEVER log API key or Authorization header"
+    access: "AIAssistantSettings.LoadAPIKey() via property getter"
+
+  artifact_security:
+    location: "Library/ (local only, never committed)"
+    sensitivity: "Low (contains project metadata, not secrets)"
+
+  user_prompts:
+    handling: "Logged in UI for debugging, included in context pack, safe to display"
+
+  conversation_state:
+    storage: "In-memory only (AIAssistantWindow._lastResponseId)"
+    persistence: "Cleared on window close or manual clear"
+    privacy: "Never sent to OpenAI except as previous_response_id parameter"
+
+performance_optimizations:
+  artifact_caching:
+    strategy: "SHA256 hash comparison before writing"
+    benefit: "Avoid expensive file I/O if content unchanged"
+    example: "Scene with 100 objects → same hash → skip write"
+
+  texture_reuse:
+    strategy: "Static dictionary cache for shape textures (64x64 base textures)"
+    benefit: "Avoid regenerating textures for every shape; color applied via SpriteRenderer.color"
+
+  token_budget:
+    strategy: "Truncate context pack if exceeds budget"
+    priority: "Keep project metadata > active scene > scripts list"
+    estimation: "4 characters ≈ 1 token (conservative approximation)"
+
+  indexer_throttling:
+    strategy: "Index on scene save (if enabled) + before API call if dirty + manual refresh"
+    benefit: "Balance freshness with performance; avoid constant re-indexing"
+
+  conversation_state_efficiency:
+    strategy: "previous_response_id reduces payload size (no need to resend full conversation history)"
+    benefit: "Faster API calls; lower token costs; OpenAI manages context server-side"
+
+  post_execution_indexing:
+    strategy: "Re-index immediately after applying actions"
+    benefit: "Prevents conversation desync; ensures AI sees actual scene state on next prompt"
+
+implementation_phases:
+
+  phase_1_foundation:
+    name: "Day 1 - MVP with Conversation Support"
+    goal: "Functional conversational AI that creates rectangles/circles with user approval"
+
+    tasks:
+      infrastructure:
+        - "Create project directory structure (Assets/Editor/AIAssistant/)"
+        - "Download SimpleJSON.cs to Assets/Editor/AIAssistant/Utilities/"
+        - "Create assembly definition (AIAssistant.asmdef)"
+        - "Create data model classes (Actions/, Models/)"
+
+      settings:
+        - "Implement AIAssistantSettings ScriptableObject"
+        - "Implement EditorPrefs API key storage (SaveAPIKey, LoadAPIKey)"
+        - "Create settings asset instance at Assets/Editor/AIAssistant/Settings/AIAssistantSettings.asset"
+        - "Add basic validation (ValidateAPIKey - non-empty check)"
+
+      indexer:
+        - "Implement ProjectIndexer.IndexProject() - serialize Unity/player settings"
+        - "Implement ProjectIndexer.IndexScenes() - iterate build settings scenes, serialize GameObjects"
+        - "Implement ProjectIndexer.IndexScripts() - find .cs files, extract class names"
+        - "Implement ComputeHash() and WriteArtifactIfChanged()"
+        - "Implement IndexAll() to orchestrate all indexing"
+        - "Hook to EditorSceneManager.sceneSaved event (if auto_index_on_save enabled)"
+
+      context_builder:
+        - "Implement ContextBuilder.BuildContextPack() - read artifacts, assemble text with instructions"
+        - "Implement token estimation (EstimateTokens)"
+        - "Implement truncation logic (TruncateScriptsList)"
+
+      openai_client:
+        - "Implement OpenAIClient.SendRequest() with UnityWebRequest"
+        - "Implement BuildRequestBody() with store:true and optional previous_response_id"
+        - "Define tool schemas (createRectangle, createCircle) in request"
+        - "Implement ParseResponse() with SimpleJSON manual parsing"
+        - "Implement ExtractMessageItems() - collect message items"
+        - "Implement ExtractFunctionCalls() - parse function_call items into actions"
+        - "Error handling (network, JSON parsing, rate limits)"
+
+      plan_applier:
+        - "Implement PlanApplier.ApplyPlan() with Undo support and result tracking"
+        - "Implement CreateRectangleGameObject() - sprite creation, positioning, scaling, validation"
+        - "Implement CreateCircleGameObject() - sprite creation, positioning, scaling, validation"
+        - "Implement GetOrCreateRectangleTexture() - 64x64 white texture"
+        - "Implement GetOrCreateCircleTexture() - 64x64 circle texture"
+        - "Implement ParseHexColor() - hex string to Unity Color with error handling"
+        - "Implement GetUniqueGameObjectName() - handle name collisions"
+
+      ui_window:
+        - "Implement AIAssistantWindow.OnEnable/OnDisable"
+        - "Implement basic OnGUI layout (log, prompt input, submit)"
+        - "Implement AppendLog() with timestamp and color coding"
+        - "Implement OnSubmitPrompt() with try/finally for progress bar"
+        - "Add dirty scene check before API call: if (scene.isDirty) IndexAll()"
+        - "Add conversation state (_lastResponseId)"
+        - "Implement pending actions UI (checkbox list)"
+        - "Implement OnExecuteSelected() - filter checked actions, call PlanApplier, log results, re-index"
+        - "Implement OnRejectAll() - clear pending state"
+        - "Implement OnClearConversation() - reset _lastResponseId"
+        - "Add manual refresh button → ProjectIndexer.IndexAll()"
+        - "Add Window menu item (Window/AI Assistant)"
+
+      testing:
+        - "Manual test: Set API key in settings"
+        - "Manual test: 'create a red rectangle at 0,0 with width 2 and height 1'"
+        - "Manual test: 'make it bigger' (verify previous_response_id works)"
+        - "Manual test: 'add a blue circle next to it' (verify spatial context)"
+        - "Manual test: Approve some actions, reject others (verify checkbox selection)"
+        - "Manual test: Verify re-indexing after execution (check artifacts timestamp)"
+        - "Manual test: Error handling (invalid API key, network failure, invalid color)"
+        - "Manual test: Partial failures (create action with invalid parameter)"
+        - "Manual test: Undo (verify single undo removes all created objects)"
+
+  phase_2_refinement:
+    name: "Future - UX Improvements"
+    goal: "Polish, error handling, better feedback"
+    tasks:
+      - "Add async/await for non-blocking API calls"
+      - "Improve progress bar (show percentage, cancelable)"
+      - "Add retry logic for rate limits (exponential backoff)"
+      - "Improve log area (syntax highlighting, expand/collapse sections, better timestamps)"
+      - "Add settings UI panel in EditorWindow"
+      - "Add conversation history panel (show past prompts/responses)"
+      - "Add 'Fork conversation' button (branch from any previous_response_id)"
+      - "Add cost estimation (token usage tracking)"
+      - "Persist conversation state across editor sessions (EditorPrefs or JSON file)"
+      - "Add validation for action parameters (negative dimensions, invalid colors) at API level"
+
+  phase_3_advanced_features:
+    name: "Future - More Actions & Intelligence"
+    goal: "Expand capabilities beyond rectangles/circles"
+    tasks:
+      - "Add more shape types (triangles, polygons, lines)"
+      - "Add modify actions (changeColor, move, rotate, scale)"
+      - "Add delete actions (deleteGameObject)"
+      - "Index component data (Transform, Rigidbody, Collider)"
+      - "Add query actions (findGameObject, listComponents)"
+      - "Support prefab instantiation"
+      - "Support material/shader modifications"
+      - "Add spatial reasoning (nearest, left of, above, etc.)"
+      - "Support hierarchical operations (parent/child relationships)"
+
+  phase_4_production:
+    name: "Future - Production Readiness"
+    goal: "Tests, docs, packaging, distribution"
+    tasks:
+      - "Add Unity Test Framework editor tests (indexer, context builder, parsing)"
+      - "Add mock API tests (test without hitting OpenAI)"
+      - "Write comprehensive README.md (installation, setup, usage)"
+      - "Create sample project with example scenes"
+      - "Package as UPM package (package.json)"
+      - "Add CI/CD (GitHub Actions for tests)"
+      - "Add telemetry (opt-in usage analytics)"
+      - "Add documentation site (Docusaurus or similar)"
+
+known_limitations:
+  day_1_scope:
+    - "Only creates rectangles and circles (no modify/delete)"
+    - "No component data in indexer (only GameObject names/positions)"
+    - "Blocking UI during API call (no async/await)"
+    - "Approximate token counting (4 chars = 1 token)"
+    - "No conversation persistence across editor sessions"
+    - "No conversation forking (can't branch from mid-conversation)"
+    - "No cost tracking (token usage not logged)"
+    - "Minimal API key validation (just non-empty check)"
+    - "No retry logic for rate limits"
+    - "SimpleJSON has no type safety (runtime errors possible)"
+
+  technical_debt:
+    - "No automated tests (manual testing only)"
+    - "No custom inspector for AIAssistantSettings"
+    - "No async/await (blocking UI)"
+    - "Texture cache never clears (minor memory leak potential)"
+    - "No caching of API responses"
+    - "No conversation history UI"
+    - "No error categorization (all errors treated similarly)"
+    - "SimpleJSON is third-party dependency (could be replaced with built-in JsonDocument in future)"
+
+glossary:
+  context_pack: "Plain text payload sent to OpenAI containing tool instructions, project metadata, scene data, scripts, and user prompt"
+  artifact: "JSON file generated by indexer describing scenes, scripts, or project metadata (stored in Library/AIAssistant/)"
+  action: "Structured command returned by OpenAI (e.g., createRectangle) awaiting user approval before execution"
+  action_result: "Result of executing a single action, including success/failure status and error message"
+  undo_group: "Unity Editor mechanism to group multiple operations into single undoable action"
+  editor_prefs: "Unity per-machine key-value storage (registry on Windows, plist on Mac); used for API key"
+  token_budget: "Maximum estimated tokens allowed in context pack to avoid OpenAI API limits"
+  preview_mode: "Settings toggle to log actions without executing (for safety testing)"
+  previous_response_id: "OpenAI response ID passed in subsequent requests to maintain conversation state and reasoning context"
+  store: "OpenAI parameter (store:true) to enable server-side conversation state management"
+  pending_actions: "List of function calls awaiting user approval in the UI checkbox list"
+  simplejson: "Lightweight MIT-licensed JSON parser; single file, zero dependencies, dynamic parsing"
+  conversation_desync: "Problem where AI's mental model diverges from actual scene state; prevented by re-indexing after execution"
+
+notes:
+  - "This is a prototype prioritizing learning and iteration over production-ready code"
+  - "All components are editor-only; no runtime dependencies"
+  - "Conversation state is the killer feature - enables natural iterative workflows"
+  - "Approval flow prevents accidental scene destruction"
+  - "Checkbox selection allows cherry-picking actions (e.g., approve 3 of 5 rectangles)"
+  - "Re-indexing after execution prevents conversation desync"
+  - "SimpleJSON simplifies prototype development; can migrate to System.Text.Json in Phase 2 if needed"
+  - "Always use try/finally for progress bars to prevent stuck UI"
+  - "Keep OpenAI tool definitions in sync with action classes (schema drift is a risk)"
+  - "Test with various token budgets to understand truncation behavior"
+  - "Monitor OpenAI API costs during development (GPT-4 is expensive)"
+  - "Conversation forking (branch from any response) is a powerful future feature"
+  - "GameObject name collision handling prevents confusion in hierarchy"
+  - "Partial failure tracking provides better user feedback"

@@ -1,0 +1,827 @@
+# Unity AI Assistant Plugin - Phase 2: Dynamic Prefab Support
+# Architecture Specification v2.1 (REVISED)
+
+project_name: "Unity AI Assistant - Prefab System"
+phase: "Phase 2 - Dynamic Prefab Support"
+unity_version: "6.2+"
+dotnet_version: ".NET Standard 2.1"
+revision_date: "2025-01-XX"
+revision_notes: "Fixed component namespacing, Vector3 parsing, name collisions, FieldInfo lifecycle"
+
+## OVERVIEW
+#
+# Phase 2 adds zero-configuration support for arbitrary Unity prefabs.
+# Users can download assets from Asset Store, tag them, and immediately
+# make them available to the AI without writing any C# code.
+#
+# Key Innovation: Automatic reflection-based scanning + cached metadata
+# for performance + JSON Schema object types for complex Unity types.
+
+## ARCHITECTURE PHILOSOPHY
+
+design_principles:
+  - "Zero-config for downloaded assets - scan and use"
+  - "Performance through caching - reflection only at scan time"
+  - "Unity-native patterns - use tags, prefabs, SerializeField"
+  - "Graceful degradation - fallback to procedural shapes"
+  - "Type-safe with error handling - never crash on bad input"
+  - "Component namespacing - avoid field name collisions"
+  - "Proper JSON parsing - handle OpenAI's object format"
+
+## COMPONENT STRUCTURE
+
+components:
+
+  # ============================================================
+  # DATA MODELS (New)
+  # ============================================================
+
+  - name: "PrefabMetadata"
+    path: "Assets/Editor/AIAssistant/Models/PrefabMetadata.cs"
+    purpose: "Stores complete metadata for a scanned prefab"
+    fields:
+      - "string prefabName - Display name for AI (unique per category)"
+      - "string prefabPath - AssetDatabase path to .prefab file"
+      - "string prefabTag - Unity tag for categorization"
+      - "string uniqueFunctionName - Globally unique function name (e.g., 'createVehiclesCar')"
+      - "ComponentMetadata[] components - All MonoBehaviour components"
+    notes:
+      - "Serializable to JSON for artifact storage"
+      - "Cached during scanning, used for tool generation"
+      - "uniqueFunctionName prevents collisions across categories"
+    attributes:
+      - "[Serializable]"
+
+  - name: "ComponentMetadata"
+    path: "Assets/Editor/AIAssistant/Models/ComponentMetadata.cs"
+    purpose: "Stores metadata for a single MonoBehaviour component"
+    fields:
+      - "string componentTypeName - Fully qualified type name (e.g., 'MyNamespace.CarController')"
+      - "string componentTypeShortName - Simple type name (e.g., 'CarController')"
+      - "FieldMetadata[] fields - All serialized fields (array for deterministic order)"
+    notes:
+      - "One per MonoBehaviour on prefab"
+      - "Includes both public and [SerializeField] private fields"
+      - "componentTypeName used for GetComponent() lookup"
+    attributes:
+      - "[Serializable]"
+
+  - name: "FieldMetadata"
+    path: "Assets/Editor/AIAssistant/Models/FieldMetadata.cs"
+    purpose: "Stores metadata for a single serializable field"
+    fields:
+      - "string fieldName - C# field name (e.g., 'maxSpeed')"
+      - "string fieldType - Type name (int, float, Vector3, etc)"
+      - "string componentTypeName - Parent component type (for lookup)"
+      - "string parameterName - API parameter name (e.g., 'CarController_maxSpeed')"
+      - "string description - Human-readable description"
+      - "bool isRequired - Whether field is required in API (default: false)"
+      - "string[] enumValues - For enum types, valid values (null if not enum)"
+    notes:
+      - "parameterName includes component prefix to avoid collisions"
+      - "Description fallback: Tooltip attribute > field name"
+      - "FieldInfo NOT stored (too complex for JSON, rebuilt on load)"
+    attributes:
+      - "[Serializable]"
+    transient_data:
+      - "FieldInfo is cached in memory after deserialization (not serialized)"
+      - "Use [NonSerialized] attribute for FieldInfo field"
+      - "Repopulate via reflection when loading PrefabRegistry.json"
+
+  - name: "InstantiatePrefabAction"
+    path: "Assets/Editor/AIAssistant/Actions/InstantiatePrefabAction.cs"
+    purpose: "Generic action for creating any prefab (replaces rectangle/circle)"
+    implements: "IAction"
+    fields:
+      - "string callId - OpenAI tool call ID"
+      - "string prefabPath - Path to prefab asset"
+      - "Vector3 position - World position"
+      - "Dictionary<string, object> parameters - Parameter name -> value (namespaced: 'ComponentType_fieldName')"
+    methods:
+      - "string GetDescription() - Returns human-readable description"
+      - "string GetCallId() - Returns OpenAI call ID"
+
+  - name: "PrefabRegistry"
+    path: "Assets/Editor/AIAssistant/Models/PrefabRegistry.cs"
+    purpose: "Root container for all prefab metadata (versioned)"
+    fields:
+      - "string version - Schema version (e.g., '2.1')"
+      - "PrefabMetadata[] prefabs - All scanned prefabs"
+    notes:
+      - "Serialized to ProjectArtifacts/PrefabRegistry.json"
+      - "Version field enables future schema migrations"
+    attributes:
+      - "[Serializable]"
+
+  # ============================================================
+  # SCANNING SYSTEM (New)
+  # ============================================================
+
+  - name: "PrefabScanner"
+    path: "Assets/Editor/AIAssistant/PrefabScanner.cs"
+    purpose: "Scans project for prefabs and extracts metadata via reflection"
+    responsibilities:
+      - "Find all .prefab files in Assets/AIPrefabs/"
+      - "Load each prefab and get all MonoBehaviour components"
+      - "Use reflection to find serialized fields"
+      - "Generate unique function names per prefab"
+      - "Group prefabs by Unity tag"
+      - "Generate PrefabRegistry.json artifact with version"
+
+    key_methods:
+      - "public static void ScanAll()"
+      - "private static PrefabMetadata ScanPrefab(string path, Dictionary<string, int> nameCounters)"
+      - "private static ComponentMetadata ScanComponent(MonoBehaviour component)"
+      - "private static bool IsSerializedField(FieldInfo field)"
+      - "private static FieldMetadata CreateFieldMetadata(FieldInfo field, string componentTypeName)"
+      - "private static string GenerateUniqueFunctionName(string prefabName, string tag, Dictionary<string, int> counters)"
+
+    reflection_strategy:
+      binding_flags: "BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance"
+      serialization_rules:
+        - "Public fields (non-static) are serialized"
+        - "Private fields with [SerializeField] are serialized"
+        - "Skip fields with [NonSerialized] or [HideInInspector]"
+        - "Properties with [field: SerializeField] need backing field extraction (Unity 6)"
+
+      property_handling:
+        - "Detect properties with [field: SerializeField] attribute"
+        - "Get backing field via compiler-generated name pattern: '<PropertyName>k__BackingField'"
+        - "Expose as property name (not backing field name)"
+        - "Example: public int MaxSpeed { get; private set; } → exposed as 'MaxSpeed'"
+
+    unique_naming_strategy:
+      algorithm: |
+        // Prevent function name collisions
+        Dictionary<string, int> nameCounters = new Dictionary<string, int>();
+
+        foreach (var prefab in prefabs) {
+            string baseName = SanitizeName(prefab.name);
+            string tag = prefab.tag;
+            string uniqueName;
+
+            // Format: create{Tag}{BaseName}
+            // Example: createVehiclesCar, createPropsTree
+            uniqueName = $"create{tag}{baseName}";
+
+            // Handle duplicates with counter
+            if (nameCounters.ContainsKey(uniqueName)) {
+                nameCounters[uniqueName]++;
+                uniqueName = $"{uniqueName}{nameCounters[uniqueName]}";
+            } else {
+                nameCounters[uniqueName] = 0;
+            }
+
+            prefab.uniqueFunctionName = uniqueName;
+        }
+
+    parameter_naming_strategy:
+      format: "{ComponentTypeShortName}_{fieldName}"
+      examples:
+        - "CarController.maxSpeed → CarController_maxSpeed"
+        - "WheelCollider.radius → WheelCollider_radius"
+        - "Rigidbody.mass → Rigidbody_mass"
+      collision_handling: "Component type prefix ensures uniqueness"
+
+    performance:
+      - "Reflection only during scanning (not instantiation)"
+      - "FieldInfo NOT serialized, cached in memory after load"
+      - "Scan triggered manually via 'Refresh Prefabs' button"
+      - "Typical scan time: <1 second for 100 prefabs"
+
+    output:
+      artifact: "ProjectArtifacts/PrefabRegistry.json"
+      format: "JSON with version field and prefabs array"
+      example_structure: |
+        {
+          "version": "2.1",
+          "prefabs": [
+            {
+              "prefabName": "RaceCar",
+              "prefabPath": "Assets/AIPrefabs/Vehicles/RaceCar.prefab",
+              "prefabTag": "Vehicles",
+              "uniqueFunctionName": "createVehiclesRaceCar",
+              "components": [...]
+            }
+          ]
+        }
+
+  # ============================================================
+  # METADATA CACHE MANAGEMENT (New)
+  # ============================================================
+
+  - name: "PrefabRegistryCache"
+    path: "Assets/Editor/AIAssistant/PrefabRegistryCache.cs"
+    purpose: "Manages loading, caching, and validation of PrefabRegistry.json"
+    responsibilities:
+      - "Load PrefabRegistry.json on demand"
+      - "Validate version compatibility"
+      - "Repopulate FieldInfo via reflection after deserialization"
+      - "Provide fast lookup by tag, function name, component type"
+      - "Detect stale cache (prefab modified after scan)"
+
+    key_methods:
+      - "public static PrefabRegistry Load() - Load and cache registry"
+      - "public static void Invalidate() - Clear cache, force reload"
+      - "private static void RepopulateFieldInfo(PrefabRegistry registry) - Rebuild FieldInfo via reflection"
+      - "public static PrefabMetadata FindByFunctionName(string name)"
+      - "public static List<PrefabMetadata> GetByTags(List<string> tags)"
+
+    cache_lifecycle:
+      1_load: "Deserialize PrefabRegistry.json to C# objects"
+      2_validate: "Check version field matches expected schema"
+      3_repopulate: "For each FieldMetadata, use reflection to get FieldInfo and cache in memory"
+      4_cache: "Store in static field for fast access"
+      5_invalidate: "Clear cache when user clicks 'Refresh Prefabs'"
+
+    repopulation_algorithm: |
+      foreach (var prefab in registry.prefabs) {
+          foreach (var component in prefab.components) {
+              Type componentType = Type.GetType(component.componentTypeName);
+              foreach (var field in component.fields) {
+                  FieldInfo fieldInfo = componentType.GetField(
+                      field.fieldName,
+                      BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance
+                  );
+                  field.cachedFieldInfo = fieldInfo;  // Set transient field
+              }
+          }
+      }
+
+  # ============================================================
+  # TOOL GENERATION (New)
+  # ============================================================
+
+  - name: "DynamicToolGenerator"
+    path: "Assets/Editor/AIAssistant/DynamicToolGenerator.cs"
+    purpose: "Converts PrefabMetadata into OpenAI function schemas"
+    responsibilities:
+      - "Load PrefabRegistry.json via PrefabRegistryCache"
+      - "Filter by selected tags"
+      - "Generate JSON Schema for each prefab"
+      - "Map C# types to JSON types"
+      - "Handle complex types (Vector3, Color, enums)"
+      - "Use namespaced parameter names"
+
+    key_methods:
+      - "public static string GenerateToolsJson(List<string> selectedTags)"
+      - "private static string GenerateFunctionSchema(PrefabMetadata prefab)"
+      - "private static JObject MapFieldToParameter(FieldMetadata field)"
+
+    type_mapping:
+      primitives:
+        - "int, float, double, long → JSON number"
+        - "bool → JSON boolean"
+        - "string → JSON string"
+
+      unity_types:
+        - "Vector2 → JSON object {\"type\": \"object\", \"properties\": {\"x\": {\"type\": \"number\"}, \"y\": {\"type\": \"number\"}}}"
+        - "Vector3 → JSON object {\"type\": \"object\", \"properties\": {\"x\": {\"type\": \"number\"}, \"y\": {\"type\": \"number\"}, \"z\": {\"type\": \"number\"}}}"
+        - "Color → JSON string with description 'Hex color #RRGGBB'"
+
+      enums:
+        - "enum → JSON string with enum constraint"
+        - "Example: {\"type\": \"string\", \"enum\": [\"Easy\", \"Medium\", \"Hard\"]}"
+
+      unsupported_phase2:
+        - "Quaternion - skip for Phase 2"
+        - "Asset references (Material, Sprite) - skip"
+        - "Arrays/Lists - skip"
+        - "Custom classes - skip"
+
+    function_schema_format: |
+      {
+        "type": "function",
+        "name": "createVehiclesRaceCar",  // Unique, includes category
+        "description": "Creates a RaceCar prefab (tag: Vehicles)",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "x": {"type": "number", "description": "World X position"},
+            "y": {"type": "number", "description": "World Y position"},
+            "z": {"type": "number", "description": "World Z position"},
+
+            // Namespaced parameters (component prefix)
+            "CarController_maxSpeed": {
+              "type": "number",
+              "description": "CarController.maxSpeed"
+            },
+            "CarController_acceleration": {
+              "type": "number",
+              "description": "CarController.acceleration"
+            },
+            "CarController_engineColor": {
+              "type": "string",
+              "description": "CarController.engineColor - hex #RRGGBB"
+            },
+            "CarController_initialVelocity": {
+              "type": "object",
+              "description": "CarController.initialVelocity (Vector3)",
+              "properties": {
+                "x": {"type": "number"},
+                "y": {"type": "number"},
+                "z": {"type": "number"}
+              }
+            },
+            "CarController_driveType": {
+              "type": "string",
+              "enum": ["FrontWheel", "RearWheel", "AllWheel"],
+              "description": "CarController.driveType"
+            }
+          },
+          "required": ["x", "y", "z"]
+        }
+      }
+
+  # ============================================================
+  # USER INTERFACE (New)
+  # ============================================================
+
+  - name: "PrefabCategoryWindow"
+    path: "Assets/Editor/AIAssistant/PrefabCategoryWindow.cs"
+    purpose: "EditorWindow for selecting which prefab categories are available to AI"
+    menu_item: "Window/AI Assistant/Prefab Categories"
+
+    ui_layout:
+      header:
+        - "Title: 'AI Prefab Categories'"
+        - "Button: 'Refresh Prefabs' -> triggers PrefabScanner.ScanAll() + PrefabRegistryCache.Invalidate()"
+        - "Button: 'Select All' / 'Deselect All'"
+
+      category_list:
+        - "Scrollable area with checkbox per Unity tag"
+        - "Shows: [✓] Vehicles (12 prefabs)"
+        - "Shows: [ ] Characters (5 prefabs)"
+        - "Shows: [✓] Props (23 prefabs)"
+
+      footer:
+        - "Status text: 'X categories selected, Y prefabs available'"
+        - "Warning if no categories: 'No categories selected - using basic shapes'"
+
+    persistence:
+      storage: "JSON file in ProjectSettings/"
+      path: "ProjectSettings/AIAssistantPrefabCategories.json"
+      format: '{"selectedTags": ["Vehicles", "Props"]}'
+      rationale: "Avoids EditorPrefs size limits, version-controllable"
+
+    integration:
+      - "AIAssistantWindow reads selection before each API call"
+      - "DynamicToolGenerator filters prefabs by selected tags"
+      - "Window can be opened/closed independently"
+
+    fallback_behavior:
+      - "If no categories selected: use rectangle/circle tools"
+      - "Show warning: 'No prefab categories selected - using basic shapes'"
+
+    initialization_check:
+      - "If PrefabRegistry.json doesn't exist, show: 'Click Refresh Prefabs to scan your project'"
+
+  # ============================================================
+  # EXECUTION SYSTEM (Refactored)
+  # ============================================================
+
+  - name: "DynamicPlanApplier"
+    path: "Assets/Editor/AIAssistant/DynamicPlanApplier.cs"
+    purpose: "Executes InstantiatePrefabAction with reflection-based parameter setting"
+    replaces: "PlanApplier.cs (keep for backward compat with rectangle/circle)"
+
+    key_methods:
+      - "public static List<ActionResult> ApplyPlan(List<IAction> actions, bool previewMode)"
+      - "private static ActionResult InstantiatePrefab(InstantiatePrefabAction action)"
+      - "private static void ApplyParameters(GameObject instance, Dictionary<string, object> parameters, PrefabMetadata metadata)"
+      - "private static object ConvertParameter(object value, Type targetType)"
+      - "private static Vector3 ParseVector3(object value)"
+      - "private static Color ParseColor(object value)"
+
+    instantiation_flow:
+      1: "Load prefab: AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath)"
+      2: "Validate prefab loaded successfully"
+      3: "Instantiate: PrefabUtility.InstantiatePrefab(prefab) as GameObject"
+      4: "Set position: instance.transform.position = action.position"
+      5: "Load metadata from PrefabRegistryCache to get component/field mappings"
+      6: "Apply parameters using namespaced lookup"
+      7: "Register Undo: Undo.RegisterCreatedObjectUndo(instance, 'AI Assistant')"
+      8: "Return ActionResult with success/error"
+
+    parameter_application:
+      algorithm: |
+        // Load metadata for this prefab
+        PrefabMetadata metadata = PrefabRegistryCache.FindByPath(action.prefabPath);
+
+        foreach (var kvp in action.parameters) {
+            string paramName = kvp.Key;  // e.g., "CarController_maxSpeed"
+            object paramValue = kvp.Value;
+
+            // Find field metadata by parameter name
+            FieldMetadata fieldMeta = FindFieldByParameterName(metadata, paramName);
+            if (fieldMeta == null) continue;
+
+            // Get component instance
+            Type componentType = Type.GetType(fieldMeta.componentTypeName);
+            Component componentInstance = instance.GetComponent(componentType);
+            if (componentInstance == null) {
+                Debug.LogWarning($"Component {componentType} not found on {instance.name}");
+                continue;
+            }
+
+            // Get cached FieldInfo
+            FieldInfo field = fieldMeta.cachedFieldInfo;
+            if (field == null) {
+                Debug.LogWarning($"FieldInfo not cached for {paramName}");
+                continue;
+            }
+
+            // Convert and set value
+            try {
+                object convertedValue = ConvertParameter(paramValue, field.FieldType);
+                field.SetValue(componentInstance, convertedValue);
+            } catch (Exception ex) {
+                Debug.LogWarning($"Failed to set {paramName}: {ex.Message}");
+            }
+        }
+
+    type_conversion:
+      Vector3: |
+        // OpenAI sends JSON object: {"x": 1, "y": 2, "z": 3}
+        // Parse using SimpleJSON (NOT JsonUtility which expects string)
+        Vector3 ParseVector3(object value) {
+            if (value is JSONNode node) {
+                return new Vector3(
+                    node["x"].AsFloat,
+                    node["y"].AsFloat,
+                    node["z"].AsFloat
+                );
+            }
+            // Fallback: parse as string if needed
+            return Vector3.zero;
+        }
+
+      Vector2: |
+        Vector2 ParseVector2(object value) {
+            if (value is JSONNode node) {
+                return new Vector2(node["x"].AsFloat, node["y"].AsFloat);
+            }
+            return Vector2.zero;
+        }
+
+      Color: |
+        Color ParseColor(object value) {
+            string hexString = value.ToString();
+            if (ColorUtility.TryParseHtmlString(hexString, out Color color)) {
+                return color;
+            }
+            return Color.white;  // Default fallback
+        }
+
+      Enum: |
+        object ParseEnum(object value, Type enumType) {
+            try {
+                return Enum.Parse(enumType, value.ToString());
+            } catch {
+                return Enum.GetValues(enumType).GetValue(0);  // First enum value
+            }
+        }
+
+      Primitives: "Convert.ChangeType(value, targetType)"
+
+    error_handling:
+      - "Try-catch per parameter (partial success possible)"
+      - "Log warnings for failed conversions"
+      - "Use default values for failed conversions"
+      - "Never crash on bad input"
+      - "Track failed parameters in ActionResult for debugging"
+
+  # ============================================================
+  # INTEGRATION (Modified)
+  # ============================================================
+
+  - name: "ContextBuilder (Modified)"
+    path: "Assets/Editor/AIAssistant/ContextBuilder.cs"
+    changes:
+      - "Read selected categories from ProjectSettings/AIAssistantPrefabCategories.json"
+      - "If PrefabRegistry.json exists AND categories selected: use DynamicToolGenerator.GenerateToolsJson(tags)"
+      - "If no registry or no categories: include rectangle/circle tools (fallback)"
+      - "Remove hardcoded TOOLS_JSON constant (move to OpenAIClient as fallback)"
+
+    new_method_signature: |
+      public static string BuildContextPack(string userPrompt, int tokenBudget, out string toolsJson)
+
+  - name: "OpenAIClient (Modified)"
+    path: "Assets/Editor/AIAssistant/OpenAIClient.cs"
+    changes:
+      - "Accept tools JSON as parameter instead of const"
+      - "Parse InstantiatePrefabAction in ParseFunctionCallItem()"
+      - "Support both old actions (rectangle/circle) and new (prefab)"
+      - "Detect function name format to route to correct action type"
+
+    new_method_signature: |
+      public static ActionPlan SendRequest(
+          AIAssistantSettings settings,
+          string contextPack,
+          string toolsJson,  // NEW parameter
+          string previousResponseId = null,
+          List<ActionResult> toolOutputs = null
+      )
+
+    parsing_logic: |
+      // In ParseFunctionCallItem:
+      string functionName = item["name"].Value;
+
+      if (functionName.StartsWith("create") && functionName.Length > 6) {
+          // Check if it's a prefab function (starts with "create{Tag}")
+          // vs procedural (createRectangle, createCircle)
+          if (functionName == "createRectangle") {
+              return ParseRectangleAction(args, callId);
+          } else if (functionName == "createCircle") {
+              return ParseCircleAction(args, callId);
+          } else {
+              // Dynamic prefab function
+              return ParsePrefabAction(args, callId, functionName);
+          }
+      }
+
+  - name: "AIAssistantWindow (Modified)"
+    path: "Assets/Editor/AIAssistant/AIAssistantWindow.cs"
+    changes:
+      - "Add toolbar button: 'Prefab Categories' -> opens PrefabCategoryWindow"
+      - "Status text shows selected category count"
+      - "Use DynamicPlanApplier for InstantiatePrefabAction"
+      - "Keep PlanApplier for rectangle/circle actions"
+      - "Pass toolsJson from ContextBuilder to OpenAIClient"
+
+    updated_flow: |
+      void OnSubmitPrompt() {
+          // Build context WITH tools
+          string toolsJson;
+          string contextPack = ContextBuilder.BuildContextPack(_userPrompt, _settings.TokenBudget, out toolsJson);
+
+          // Send request with dynamic tools
+          var plan = OpenAIClient.SendRequest(_settings, contextPack, toolsJson, _lastResponseId);
+
+          // ... rest of flow
+      }
+
+  # ============================================================
+  # SETTINGS (Modified)
+  # ============================================================
+
+  - name: "AIAssistantSettings (Modified)"
+    path: "Assets/Editor/AIAssistant/AIAssistantSettings.cs"
+    new_fields:
+      - "public string PrefabScanFolder = 'Assets/AIPrefabs' - Root folder for scanning"
+      - "public bool AutoScanOnAssetChange = false - Auto-scan on asset import (future feature)"
+
+## DATA FLOW
+
+user_workflow:
+  1: "User downloads asset pack from Asset Store"
+  2: "User moves prefabs to Assets/AIPrefabs/Vehicles/"
+  3: "User tags prefabs with Unity tag 'Vehicles' in Inspector (Project → Select prefab → Tag dropdown)"
+  4: "User opens Window > AI Assistant > Prefab Categories"
+  5: "User clicks 'Refresh Prefabs' button"
+  6: "PrefabScanner scans all prefabs, generates PrefabRegistry.json with version 2.1"
+  7: "User checks 'Vehicles' category checkbox"
+  8: "Selection saved to ProjectSettings/AIAssistantPrefabCategories.json"
+  9: "User returns to AI Assistant window"
+  10: "User submits prompt: 'Create a race car at 0,0,0 with max speed 150'"
+  11: "ContextBuilder loads categories, generates tools via DynamicToolGenerator"
+  12: "OpenAI receives tools with namespaced parameters (CarController_maxSpeed)"
+  13: "GPT-5 calls createVehiclesRaceCar with parameters"
+  14: "DynamicPlanApplier instantiates prefab, looks up components by type, sets fields"
+  15: "Done! Car appears in scene with configured parameters"
+
+api_request_flow:
+  1: "AIAssistantWindow.OnSubmitPrompt()"
+  2: "ContextBuilder reads ProjectSettings/AIAssistantPrefabCategories.json"
+  3: "PrefabRegistryCache.Load() → deserialize + repopulate FieldInfo"
+  4: "DynamicToolGenerator.GenerateToolsJson(selectedTags)"
+  5: "ContextBuilder.BuildContextPack() returns context + toolsJson"
+  6: "OpenAIClient.SendRequest() with dynamic tools JSON"
+  7: "GPT-5 returns function_call with unique function name + namespaced parameters"
+  8: "OpenAIClient.ParseFunctionCallItem() → detect prefab vs procedural"
+  9: "Create InstantiatePrefabAction with parameter dictionary"
+  10: "Return ActionPlan with actions"
+  11: "User approves in UI"
+  12: "DynamicPlanApplier.ApplyPlan()"
+  13: "For each parameter: find FieldMetadata → GetComponent → SetValue"
+  14: "Submit tool outputs back to OpenAI"
+
+## PERFORMANCE CONSIDERATIONS
+
+performance_strategy:
+  scanning:
+    - "Reflection only during PrefabScanner.ScanAll()"
+    - "FieldInfo NOT serialized to JSON (too complex)"
+    - "Triggered manually via button (not automatic)"
+    - "Typical scan time: <1 second for 100 prefabs"
+
+  cache_loading:
+    - "Deserialize PrefabRegistry.json once per session"
+    - "Repopulate FieldInfo via reflection on load (~100ms for 100 prefabs)"
+    - "Cache in static field for fast repeated access"
+    - "Invalidate only on manual refresh"
+
+  tool_generation:
+    - "Read cached PrefabRegistry from memory (no disk I/O)"
+    - "Filter by selected tags (O(n) scan)"
+    - "Generate JSON strings (minimal overhead)"
+    - "Typical time: <100ms for 50 prefabs"
+
+  instantiation:
+    - "Use cached FieldInfo (no GetField() calls)"
+    - "GetComponent() per unique component type (fast)"
+    - "Reflection only for SetValue() (acceptable)"
+    - "Try-catch per parameter (safe)"
+    - "Typical time: <10ms per prefab"
+
+## TYPE SUPPORT MATRIX
+
+supported_types:
+  tier_1_always:
+    - int
+    - float
+    - double
+    - long
+    - bool
+    - string
+
+  tier_2_high_priority:
+    - Vector2: "JSON object {x, y}"
+    - Vector3: "JSON object {x, y, z}"
+    - Color: "JSON string (hex #RRGGBB)"
+
+  tier_3_medium_priority:
+    - Enums: "JSON string with enum constraint"
+
+  phase_3_future:
+    - Quaternion: "Euler angles (Vector3) or skip"
+    - Material: "Asset reference system"
+    - Sprite: "Asset reference system"
+    - Arrays: "JSON arrays"
+    - Custom classes: "Nested objects"
+
+## FILE STRUCTURE
+
+new_files:
+  data_models:
+    - "Assets/Editor/AIAssistant/Models/PrefabMetadata.cs"
+    - "Assets/Editor/AIAssistant/Models/ComponentMetadata.cs"
+    - "Assets/Editor/AIAssistant/Models/FieldMetadata.cs"
+    - "Assets/Editor/AIAssistant/Models/PrefabRegistry.cs"
+    - "Assets/Editor/AIAssistant/Actions/InstantiatePrefabAction.cs"
+
+  scanning:
+    - "Assets/Editor/AIAssistant/PrefabScanner.cs"
+    - "Assets/Editor/AIAssistant/PrefabRegistryCache.cs"
+
+  generation:
+    - "Assets/Editor/AIAssistant/DynamicToolGenerator.cs"
+
+  ui:
+    - "Assets/Editor/AIAssistant/PrefabCategoryWindow.cs"
+
+  execution:
+    - "Assets/Editor/AIAssistant/DynamicPlanApplier.cs"
+
+  artifacts:
+    - "ProjectArtifacts/PrefabRegistry.json"
+    - "ProjectSettings/AIAssistantPrefabCategories.json"
+
+modified_files:
+  - "Assets/Editor/AIAssistant/ContextBuilder.cs"
+  - "Assets/Editor/AIAssistant/OpenAIClient.cs"
+  - "Assets/Editor/AIAssistant/AIAssistantWindow.cs"
+  - "Assets/Editor/AIAssistant/AIAssistantSettings.cs"
+
+## TESTING STRATEGY
+
+test_scenarios:
+  basic:
+    - "Scan simple prefab with public int field → verify JSON structure"
+    - "Generate tool JSON for simple prefab → verify parameter namespacing"
+    - "Instantiate prefab with one parameter → verify component lookup works"
+
+  complex_types:
+    - "Prefab with Vector3 field → AI sends {x: 1, y: 2, z: 3} → verify parsed correctly"
+    - "Prefab with Color field → AI sends '#FF0000' → verify converted to Color.red"
+    - "Prefab with enum field → AI chooses valid enum value → verify assigned"
+
+  component_namespacing:
+    - "Prefab with 2 components having same field name → verify both set correctly"
+    - "CarController.maxSpeed + EngineController.maxSpeed → no collision"
+
+  name_collision:
+    - "Two prefabs named 'Car' in different folders → verify unique function names"
+    - "createVehiclesCar vs createPropsCar"
+
+  edge_cases:
+    - "Prefab with no serialized fields → only position parameter"
+    - "Prefab with [SerializeField] private fields → verify detected"
+    - "Prefab with Unity 6 property syntax [field: SerializeField] → verify backing field extracted"
+    - "AI sends invalid parameter value → verify graceful error + default value"
+    - "PrefabRegistry.json doesn't exist → verify fallback to basic shapes"
+
+  integration:
+    - "Select multiple categories → verify all prefabs available"
+    - "Deselect all → verify fallback to rectangle/circle"
+    - "Download new asset → refresh → verify immediately usable"
+    - "Modify prefab → refresh → verify updated parameters"
+
+  performance:
+    - "Scan 100 prefabs → verify <1 second"
+    - "Load registry + repopulate FieldInfo → verify <100ms"
+    - "Instantiate + configure 10 prefabs → verify <100ms total"
+
+## MONETIZATION CONSIDERATIONS
+
+value_proposition:
+  - "Zero-config asset integration (unique selling point)"
+  - "Works with ANY Asset Store package"
+  - "Scales to hundreds of prefabs"
+  - "Professional tool for rapid prototyping"
+  - "Component namespacing prevents conflicts"
+  - "Proper type handling (Vector3, Color, enums)"
+
+future_premium_features:
+  - "Cloud prefab library (curated, pre-scanned)"
+  - "AI-generated prefab descriptions (better than field names)"
+  - "Semantic search for prefabs"
+  - "Team collaboration (shared category presets)"
+  - "Version control integration"
+  - "Asset reference support (Material, Sprite selection)"
+  - "Array/list parameter support"
+
+## MIGRATION STRATEGY
+
+backward_compatibility:
+  - "Keep PlanApplier.cs for rectangle/circle actions"
+  - "Keep CreateRectangleAction, CreateCircleAction classes"
+  - "DynamicPlanApplier handles both old and new actions"
+  - "Fallback to procedural shapes if no prefabs selected or registry missing"
+
+migration_path:
+  phase_2_0: "Add prefab system, keep rectangle/circle as fallback"
+  phase_2_1: "Deprecate procedural shapes (show warning)"
+  phase_3_0: "Remove procedural shapes (prefabs only)"
+
+schema_versioning:
+  current_version: "2.1"
+  version_check: "PrefabRegistryCache validates version on load"
+  future_migration: "If version mismatch, show warning and re-scan recommended"
+
+## KNOWN LIMITATIONS
+
+phase_2_limitations:
+  - "No asset reference support (Material, Sprite, etc) - require pre-configured prefabs"
+  - "No array/list parameter support - skip these fields"
+  - "No nested custom class support - skip complex types"
+  - "No runtime prefab modification - editor only"
+  - "Requires manual Unity tag assignment (13 steps in workflow)"
+  - "Limited to ~50 tools per API call due to token budget"
+  - "FieldInfo cache invalidated on editor restart (must repopulate)"
+  - "No automatic change detection (must click Refresh Prefabs)"
+
+## SUCCESS CRITERIA
+
+phase_2_complete_when:
+  - "User can download asset, tag it, refresh, and use with zero C# code"
+  - "System supports int, float, bool, string, Vector2, Vector3, Color, enum"
+  - "Component namespacing prevents field name collisions"
+  - "PrefabCategoryWindow allows tag selection with persistence"
+  - "DynamicPlanApplier successfully instantiates and configures prefabs"
+  - "Unique function names prevent prefab name collisions"
+  - "Vector3/Vector2 parsed correctly from JSON objects (not strings)"
+  - "FieldInfo repopulated correctly after deserialization"
+  - "Performance: <1s scan, <100ms tool gen, <10ms instantiate"
+  - "Graceful fallback to basic shapes if registry missing"
+
+## IMPLEMENTATION ORDER
+
+build_sequence:
+  1: "Data Models (PrefabMetadata, ComponentMetadata, FieldMetadata, PrefabRegistry)"
+  2: "PrefabScanner with reflection + component namespacing + unique names"
+  3: "PrefabRegistryCache with FieldInfo repopulation"
+  4: "DynamicToolGenerator with proper type mapping"
+  5: "PrefabCategoryWindow UI with JSON persistence"
+  6: "InstantiatePrefabAction class"
+  7: "DynamicPlanApplier with component lookup + Vector3 parsing"
+  8: "Integrate into ContextBuilder (pass toolsJson)"
+  9: "Update OpenAIClient (accept toolsJson param, parse prefab actions)"
+  10: "Update AIAssistantWindow (toolbar button, dual applier support)"
+  11: "Testing: basic → complex types → namespacing → edge cases"
+
+estimated_effort: "3-4 days of focused development (revised from 2-3 due to additional complexity)"
+
+## REVISION HISTORY
+
+v2_1_fixes:
+  - "Added component namespacing for parameters (ComponentType_fieldName)"
+  - "Fixed Vector3/Vector2 parsing to use SimpleJSON (not JsonUtility)"
+  - "Added unique function name generation with tag prefix"
+  - "Added PrefabRegistry wrapper with version field"
+  - "Added PrefabRegistryCache for FieldInfo lifecycle management"
+  - "Changed persistence from EditorPrefs to JSON file"
+  - "Documented FieldInfo repopulation algorithm"
+  - "Added component type to FieldMetadata for lookup"
+  - "Clarified property backing field extraction for Unity 6"
+  - "Added version validation and migration strategy"
