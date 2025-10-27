@@ -52,5 +52,36 @@ namespace ContextAwareSceneBuilder.Editor
         /// Example: Wall with bottom pivot has centerOffset.y = size.y / 2
         /// </summary>
         public UnityEngine.Vector3 centerOffset;
+
+        /// <summary>
+        /// Semantic tags describing prefab purpose (e.g., "enemy", "furniture").
+        /// Helps LLM understand prefab beyond name/category.
+        /// Null if no SemanticTags component on prefab root.
+        /// </summary>
+        public string[] semanticTags;
+
+        /// <summary>
+        /// Named semantic points with local position offsets.
+        /// Used for precise object placement (e.g., "shelf_surface_1", "front").
+        /// Null if no SemanticPoints container exists in prefab.
+        /// </summary>
+        public SemanticPoint[] semanticPoints;
+    }
+
+    /// <summary>
+    /// Represents a named semantic point with local position offset.
+    /// </summary>
+    [Serializable]
+    public class SemanticPoint
+    {
+        /// <summary>
+        /// Name of the semantic point (e.g., "front", "shelf_surface_1", "nose_tip").
+        /// </summary>
+        public string name;
+
+        /// <summary>
+        /// Local position offset relative to prefab pivot.
+        /// </summary>
+        public UnityEngine.Vector3 offset;
     }
 }

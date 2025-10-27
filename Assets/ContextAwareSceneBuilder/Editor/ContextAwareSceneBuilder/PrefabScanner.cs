@@ -87,60 +87,118 @@ namespace ContextAwareSceneBuilder.Editor
         /// </summary>
         private static PrefabMetadata ScanPrefab(string path, Dictionary<string, int> nameCounters)
         {
-            // Load prefab
-            GameObject prefab = AssetDatabase.LoadAssetAtPath<GameObject>(path);
-            if (prefab == null)
+            // Load prefab asset
+            GameObject prefabAsset = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+            if (prefabAsset == null)
             {
                 Debug.LogWarning($"[AI Assistant] Failed to load prefab: {path}");
                 return null;
             }
 
             // Get category: Unity tag > folder name > "Default"
-            string category = GetPrefabCategory(prefab, path);
+            string category = GetPrefabCategory(prefabAsset, path);
             if (string.IsNullOrEmpty(category))
             {
-                Debug.LogWarning($"[AI Assistant] Skipping {prefab.name} - no category determined");
+                Debug.LogWarning($"[AI Assistant] Skipping {prefabAsset.name} - no category determined");
                 return null;
             }
 
-            // Get all MonoBehaviour components (may be empty for simple prefabs like rocks/trees)
-            var components = prefab.GetComponents<MonoBehaviour>();
-
-            // Scan components for serialized fields
-            List<ComponentMetadata> componentMetas = new List<ComponentMetadata>();
-            foreach (var component in components)
+            // Temporarily instantiate to get accurate bounds
+            GameObject tempInstance = PrefabUtility.InstantiatePrefab(prefabAsset) as GameObject;
+            if (tempInstance == null)
             {
-                if (component == null)
-                {
-                    Debug.LogWarning($"[AI Assistant] Skipping missing script on {prefab.name}");
-                    continue;  // Skip missing scripts
-                }
-
-                ComponentMetadata meta = ScanComponent(component);
-                if (meta != null && meta.fields.Length > 0)
-                {
-                    componentMetas.Add(meta);
-                }
+                Debug.LogWarning($"[AI Assistant] Failed to instantiate prefab: {path}");
+                return null;
             }
 
-            // Allow prefabs with no parameters - they can still be instantiated at positions
-            if (componentMetas.Count == 0)
+            // Prevent temp instance from polluting scene/hierarchy
+            tempInstance.hideFlags = HideFlags.HideAndDontSave;
+
+            try
             {
-                Debug.Log($"[AI Assistant] Including {prefab.name} with position-only parameters (no custom fields)");
+                // Calculate bounds (size and centerOffset)
+                Vector3 size, centerOffset;
+                bool hasBounds = CalculateBounds(tempInstance, out size, out centerOffset);
+
+                if (!hasBounds)
+                {
+                    Debug.LogWarning($"[AI Assistant] Skipping {prefabAsset.name} - no Renderer or Collider for bounds calculation");
+                    return null;
+                }
+
+                // Scan components on temp instance
+                var components = tempInstance.GetComponents<MonoBehaviour>();
+                List<ComponentMetadata> componentMetas = new List<ComponentMetadata>();
+                foreach (var component in components)
+                {
+                    if (component == null)
+                    {
+                        Debug.LogWarning($"[AI Assistant] Skipping missing script on {prefabAsset.name}");
+                        continue;  // Skip missing scripts
+                    }
+
+                    ComponentMetadata meta = ScanComponent(component);
+                    if (meta != null && meta.fields.Length > 0)
+                    {
+                        componentMetas.Add(meta);
+                    }
+                }
+
+                // Allow prefabs with no parameters - they can still be instantiated at positions
+                if (componentMetas.Count == 0)
+                {
+                    Debug.Log($"[AI Assistant] Including {prefabAsset.name} with position-only parameters (no custom fields)");
+                }
+
+                // Extract semantic tags
+                string[] semanticTags = null;
+                SemanticTags semanticTagsComp = tempInstance.GetComponent<SemanticTags>();
+                if (semanticTagsComp != null && semanticTagsComp.tags != null && semanticTagsComp.tags.Count > 0)
+                {
+                    semanticTags = semanticTagsComp.tags.ToArray();
+                    Debug.Log($"[AI Assistant] Found {semanticTags.Length} semantic tag(s) on {prefabAsset.name}");
+                }
+
+                // Extract semantic points
+                SemanticPoint[] semanticPoints = null;
+                Transform semanticPointsContainer = tempInstance.transform.Find("SemanticPoints");
+                if (semanticPointsContainer != null)
+                {
+                    List<SemanticPoint> points = new List<SemanticPoint>();
+                    foreach (Transform child in semanticPointsContainer)
+                    {
+                        points.Add(new SemanticPoint
+                        {
+                            name = child.name,
+                            offset = child.localPosition
+                        });
+                    }
+                    semanticPoints = points.ToArray();
+                    Debug.Log($"[AI Assistant] Found {semanticPoints.Length} semantic point(s) on {prefabAsset.name}");
+                }
+
+                // Generate unique function name
+                string sanitizedName = SanitizeName(prefabAsset.name);
+                string uniqueName = GenerateUniqueFunctionName(sanitizedName, category, nameCounters);
+
+                return new PrefabMetadata
+                {
+                    prefabName = prefabAsset.name,
+                    prefabPath = path,
+                    prefabTag = category,
+                    uniqueFunctionName = uniqueName,
+                    size = size,
+                    centerOffset = centerOffset,
+                    components = componentMetas.ToArray(),
+                    semanticTags = semanticTags,
+                    semanticPoints = semanticPoints
+                };
             }
-
-            // Generate unique function name
-            string sanitizedName = SanitizeName(prefab.name);
-            string uniqueName = GenerateUniqueFunctionName(sanitizedName, category, nameCounters);
-
-            return new PrefabMetadata
+            finally
             {
-                prefabName = prefab.name,
-                prefabPath = path,
-                prefabTag = category,
-                uniqueFunctionName = uniqueName,
-                components = componentMetas.ToArray()
-            };
+                // CRITICAL: Always destroy temp instance to avoid cluttering scene
+                UnityEngine.Object.DestroyImmediate(tempInstance);
+            }
         }
 
         /// <summary>
@@ -428,6 +486,55 @@ namespace ContextAwareSceneBuilder.Editor
             }
 
             return null;
+        }
+
+        /// <summary>
+        /// Calculates bounding box size and center offset for a prefab instance.
+        /// Tries renderers first (for visual bounds), falls back to colliders (for physics bounds).
+        /// </summary>
+        /// <param name="instance">Instantiated prefab (must be in scene)</param>
+        /// <param name="size">Output: Bounding box dimensions (width, height, depth)</param>
+        /// <param name="centerOffset">Output: Offset from pivot to visual center</param>
+        /// <returns>True if bounds calculated successfully, false if no Renderer or Collider found</returns>
+        private static bool CalculateBounds(GameObject instance, out Vector3 size, out Vector3 centerOffset)
+        {
+            // Ensure consistent coordinate space for measurement
+            instance.transform.position = Vector3.zero;
+            instance.transform.rotation = Quaternion.identity;
+            instance.transform.localScale = Vector3.one;
+
+            // Try renderers first (includeInactive captures LODs, toggleable parts, hidden visualizations)
+            Renderer[] renderers = instance.GetComponentsInChildren<Renderer>(includeInactive: true);
+            if (renderers.Length > 0)
+            {
+                Bounds combined = renderers[0].bounds;
+                for (int i = 1; i < renderers.Length; i++)
+                {
+                    combined.Encapsulate(renderers[i].bounds);
+                }
+                size = combined.size;
+                centerOffset = combined.center - instance.transform.position;
+                return true;
+            }
+
+            // Fallback to colliders (for prefabs without renderers but with physics)
+            Collider[] colliders = instance.GetComponentsInChildren<Collider>(includeInactive: true);
+            if (colliders.Length > 0)
+            {
+                Bounds combined = colliders[0].bounds;
+                for (int i = 1; i < colliders.Length; i++)
+                {
+                    combined.Encapsulate(colliders[i].bounds);
+                }
+                size = combined.size;
+                centerOffset = combined.center - instance.transform.position;
+                return true;
+            }
+
+            // No bounds available (empty containers, particle systems without renderers, etc.)
+            size = Vector3.zero;
+            centerOffset = Vector3.zero;
+            return false;
         }
     }
 }
