@@ -38,5 +38,19 @@ namespace ContextAwareSceneBuilder.Editor
         /// Used to generate function parameters and apply values.
         /// </summary>
         public ComponentMetadata[] components;
+
+        /// <summary>
+        /// Bounding box dimensions (width, height, depth) in local space.
+        /// Used by GPT-5 to understand object size for spatial fit reasoning.
+        /// </summary>
+        public UnityEngine.Vector3 size;
+
+        /// <summary>
+        /// Offset from GameObject pivot to visual center.
+        /// Calculated as: bounds.center - transform.position
+        /// Used by GPT-5 to calculate visual center: visualCenter = position + centerOffset
+        /// Example: Wall with bottom pivot has centerOffset.y = size.y / 2
+        /// </summary>
+        public UnityEngine.Vector3 centerOffset;
     }
 }

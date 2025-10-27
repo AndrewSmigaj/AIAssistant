@@ -1,0 +1,509 @@
+# Architecture: Prefab Semantic Annotation System
+# Status: DRAFT - In Research & Design Phase
+# Created: 2025-01-26
+
+overview: |
+  A Unity 6 editor tool for visually annotating prefabs with semantic points
+  (e.g., "front", "shelf_surface_1", "nose_tip").
+
+  Purpose: Enable LLM to place objects precisely at named locations instead of
+  calculating bounds-based positions.
+
+---
+
+# STRUCTURE
+
+prefab_hierarchy: |
+  PrefabRoot
+  ├── [regular prefab content - unchanged]
+  └── SemanticPoints (container GameObject)
+      ├── front (user-defined point)
+      ├── back (user-defined point)
+      ├── shelf_surface_1 (user-defined point)
+      ├── shelf_surface_2 (user-defined point)
+      └── nose_tip (user-defined point)
+
+storage_location: "In prefab hierarchy as child GameObjects"
+container_name: "SemanticPoints"
+
+runtime_behavior: |
+  SemanticPoints container and child GameObjects are included in builds by default.
+  SemanticPointMarker component is editor-only (#if UNITY_EDITOR), so gizmos won't appear in builds.
+  GameObjects themselves are harmless at runtime (empty child transforms).
+  User can manually strip SemanticPoints container from instances if desired.
+
+---
+
+# COMPONENTS
+
+components:
+  1a_semantic_tags:
+    file: "SemanticTags.cs"
+    type: "MonoBehaviour"
+    purpose: "Stores semantic tags on prefab root for LLM understanding"
+
+    fields:
+      - name: "tags"
+        type: "List<string>"
+        purpose: "User-defined tags like 'enemy', 'furniture', 'weapon'"
+        example: "['enemy', 'melee', 'hostile']"
+
+    design_notes:
+      - "Attached to prefab root (not in SemanticPoints container)"
+      - "Tags help LLM understand prefab purpose beyond name/category"
+      - "Useful when prefab name is unclear (e.g., 'Orc_v2' → tags: 'enemy, melee')"
+      - "Not wrapped in #if UNITY_EDITOR - can be used at runtime if needed"
+
+  1b_semantic_point_marker:
+    file: "SemanticPointMarker.cs"
+    type: "MonoBehaviour"
+    purpose: "Marks individual semantic points with gizmo visualization"
+
+    methods:
+      - name: "OnDrawGizmos()"
+        purpose: "Draw visual gizmo in Scene view"
+        behavior: |
+          - Draw yellow sphere using Gizmos.DrawSphere() (0.05f radius)
+          - Set color with alpha 0.5: Gizmos.color = new Color(1, 1, 0, 0.5f)
+          - Draw label using Handles.Label(transform.position, gameObject.name)
+
+    design_notes:
+      - "Wrapped in #if UNITY_EDITOR to exclude from builds"
+      - "Uses OnDrawGizmos() (always visible) not OnDrawGizmosSelected()"
+      - "Half-transparent (alpha 0.5) to avoid obscuring prefab"
+      - "Gizmos API for sphere, Handles API for text (both UnityEditor namespace)"
+
+  2_prefab_semantic_annotator:
+    file: "PrefabSemanticAnnotator.cs"
+    type: "EditorWindow"
+    menu_path: "Window/Context-Aware Scene Builder/Semantic Annotator"
+    purpose: "Main UI tool for annotating prefabs"
+
+    ui_layout:
+      left_panel:
+        type: "Scrollable prefab list"
+        source: "PrefabRegistryCache.GetByTags()"
+        filter: "Selected categories from PrefabCategoryPersistence"
+        interaction: "Click to select → loads in center panel"
+
+      center_panel:
+        type: "3D Interactive Preview"
+        rendering: "PreviewRenderUtility"
+        controls:
+          - "Mouse drag to orbit camera"
+          - "Mouse scroll to zoom"
+          - "Click on prefab to add semantic point (raycast)"
+          - "Transform handles (Handles.PositionHandle) to move selected point"
+
+        technical_details:
+          prefab_loading: "PrefabUtility.LoadPrefabContents(path)"
+          camera_setup: "Orbit camera with pitch/yaw, LookAt center"
+          interaction: "Event handling in preview rect"
+
+      right_panel:
+        sections:
+          semantic_tags:
+            fields:
+              - "Tags text field (comma-separated, e.g., 'enemy, melee, hostile')"
+              - "Saves to SemanticTags component on prefab root"
+
+          semantic_points:
+            display: "List of semantic points"
+            per_point_controls:
+              - "Name text field (editable)"
+              - "Position display (read-only, local coordinates)"
+              - "'Focus' button (frame in preview)"
+              - "'Delete' button"
+            actions:
+              - "'+ Add Point' button (creates new point at prefab center)"
+              - "'Create Directions' button (auto-creates 6 directional points: front, back, left, right, top, bottom)"
+
+    key_methods:
+      RenderPreview:
+        purpose: "Draw 3D preview in center panel"
+        implementation: |
+          - previewUtil.BeginPreview(rect, GUIStyle.none)
+          - Position camera in orbit using cameraOrbit angles
+          - camera.transform.LookAt(Vector3.zero)
+          - Render and display with EndAndDrawPreview()
+          - HandleOrbitInput(rect) for mouse interaction
+
+      AddSemanticPoint:
+        purpose: "Add new semantic point to prefab"
+        workflow: |
+          1. PrefabUtility.LoadPrefabContents(path)
+          2. Find or create "SemanticPoints" container
+          3. Create new GameObject as child
+          4. Add SemanticPointMarker component
+          5. PrefabUtility.SaveAsPrefabAsset(contents, path)
+          6. PrefabUtility.UnloadPrefabContents(contents)
+
+      CreateDirectionalPoints:
+        purpose: "Auto-create 6 directional semantic points at bounds edges"
+        workflow: |
+          1. PrefabUtility.LoadPrefabContents(path)
+          2. Find or create "SemanticPoints" container
+          3. Check if any directional points (front, back, left, right, top, bottom) already exist
+             - If any exist: show dialog asking if user wants to replace existing points
+             - If user cancels: abort operation
+          4. Calculate bounds directly from loaded prefab contents:
+             - Use CalculateBounds() helper (same logic as PrefabScanner)
+             - Iterate all Renderers and Colliders to get combined bounds
+             - Calculate size and centerOffset
+          5. Calculate bounds edges:
+             - front: z = centerOffset.z + (size.z / 2)
+             - back: z = centerOffset.z - (size.z / 2)
+             - right: x = centerOffset.x + (size.x / 2)
+             - left: x = centerOffset.x - (size.x / 2)
+             - top: y = centerOffset.y + (size.y / 2)
+             - bottom: y = centerOffset.y - (size.y / 2)
+          6. Delete existing directional points if replacing
+          7. For each direction (front, back, left, right, top, bottom):
+             - Create GameObject as child of SemanticPoints
+             - Set name to direction (e.g., "front")
+             - Set localPosition to calculated bounds edge
+             - Add SemanticPointMarker component
+          8. PrefabUtility.SaveAsPrefabAsset(contents, path)
+          9. PrefabUtility.UnloadPrefabContents(contents)
+
+        note: "Calculates bounds directly from prefab, doesn't require PrefabMetadata to exist yet"
+
+      OnSceneGUI:
+        purpose: "Allow editing semantic points in Scene view"
+        integration: "Subscribe to SceneView.duringSceneGui"
+        behavior: |
+          - When tool is open and point is selected
+          - Draw Handles.PositionHandle() for selected point
+          - Support Undo.RecordObject() for changes
+
+  3_prefab_scanner_updates:
+    file: "PrefabScanner.cs (existing)"
+    purpose: "Extract semantic points and tags during prefab scanning"
+
+    changes:
+      location: "In ScanPrefab(), after component scanning"
+      logic: |
+        1. Check for SemanticTags component on prefab root
+           - If found: extract tags list → store in PrefabMetadata.semanticTags
+
+        2. Check if tempInstance has "SemanticPoints" child
+           - If found:
+             a. Iterate children
+             b. For each child: add to semanticPoints list (name + localPosition)
+
+        3. Store in PrefabMetadata.semanticPoints and .semanticTags
+
+  4_prefab_metadata_updates:
+    file: "PrefabMetadata.cs (existing)"
+    purpose: "Store semantic point and tag data"
+
+    new_fields:
+      semanticTags:
+        type: "string[]"
+        description: "Array of semantic tags for LLM understanding"
+        nullable: "Yes (null if no SemanticTags component)"
+        example: "['enemy', 'melee', 'hostile']"
+
+      semanticPoints:
+        type: "SemanticPoint[]"
+        description: "Array of semantic points with local offsets"
+        nullable: "Yes (null if no SemanticPoints container)"
+
+    new_class:
+      name: "SemanticPoint"
+      serializable: true
+      fields:
+        - name: "name"
+          type: "string"
+          example: "'front', 'shelf_surface_1', 'nose_tip'"
+
+        - name: "offset"
+          type: "Vector3"
+          description: "Local position relative to prefab pivot"
+
+  5_prefab_catalog_generator_updates:
+    file: "PrefabCatalogGenerator.cs (existing)"
+    purpose: "Include semantic points and tags in JSON catalog with token optimizations"
+
+    changes:
+      location: "In GeneratePrefabCatalogJson(), after components section"
+
+      token_optimizations:
+        - "Change FormatVector3() to return arrays: [x, y, z] instead of {x, y, z}"
+        - "Minify JSON (JsonUtility.ToJson() with no whitespace)"
+        - "Rename 'parameters' → 'params'"
+        - "Rename 'description' → 'desc'"
+        - "semanticPoints as compact tuples: ['name', x, y, z]"
+
+      json_format: |
+        {
+          "path": "...",
+          "name": "...",
+          "size": [3.0, 2.0, 1.0],
+          "centerOffset": [1.5, 1.0, 0.5],
+          "semanticTags": ["enemy", "melee"],
+          "semanticPoints": [
+            ["front", 0, 1.0, 1.5],
+            ["shelf_surface_1", 0, 1.5, 0.2],
+            ["shelf_surface_2", 0, 1.0, 0.2]
+          ],
+          "components": [...]
+        }
+
+        Note: semanticPoints format is [name, x, y, z] where x,y,z are LOCAL offsets from prefab pivot
+
+  6_context_builder_updates:
+    file: "ContextBuilder.cs (existing)"
+    purpose: "Update positioning guide to explain semantic points"
+
+    new_section:
+      title: "Semantic Points"
+      content: |
+        Prefabs may include named semantic points for precise placement.
+
+        **In Prefab Catalog**: semanticPoints with LOCAL offsets
+        - Format: ["name", x, y, z] where x,y,z are local offsets from prefab pivot
+        - Example: Book prefab: ["bottom_center", 0, 0, 0.075]
+
+        **In Scene Context**: semanticPoints with WORLD positions
+        - Format: ["name", x, y, z] where x,y,z are world coordinates
+        - Already transformed to world space - ready to use
+        - Example: Bookcase: ["shelf_surface_1", 5.2, 1.5, 5]
+
+        **Using Semantic Points** (preferred when available):
+          Align semantic point to semantic point for precise placement.
+
+          Example: Place book on shelf surface
+            1. Target: shelf_surface_1 at world position (5.2, 1.5, 5)
+            2. Book's bottom_center offset from catalog: (0, 0, 0.075)
+            3. Book position = (5.2, 1.5, 5) - (0, 0, 0.075) = (5.2, 1.5, 4.925)
+
+        **Fallback Using centerOffset + size** (when semantic points not available):
+          If object doesn't have semantic points, use centerOffset and size to calculate bounds.
+          Less reliable but always available for all prefabs.
+
+          Example: Calculate bottom of object to place on surface
+            - visualCenter = position + centerOffset
+            - bottom = visualCenter - (size.y / 2)
+
+  7_scene_indexer_updates:
+    file: "ProjectIndexer.cs (existing)"
+    purpose: "Calculate and include semantic point world positions in scene context"
+
+    changes:
+      location: "During scene GameObject indexing"
+
+      token_optimizations:
+        - "Update Vector3Serializable or GameObjectInfo serialization to use arrays [x, y, z]"
+        - "Apply to position, rotation, and scale fields"
+        - "Matches catalog format for consistency"
+
+      logic: |
+        For each GameObject in scene:
+          1. Check if it has "SemanticPoints" child container
+          2. If found:
+             a. For each child under SemanticPoints:
+                - Get child's name (semantic point name)
+                - Get child's world position (child.transform.position)
+                - Add as tuple: [name, x, y, z]
+          3. Include semanticPoints array in scene context JSON
+
+      json_format: |
+        {
+          "instanceId": 12345,
+          "name": "Bookcase",
+          "position": [5, 0, 5],
+          "rotation": [0, 90, 0],
+          "semanticPoints": [
+            ["shelf_surface_1", 5.2, 1.5, 5],
+            ["shelf_surface_2", 5.2, 1.0, 5]
+          ]
+        }
+
+        Format notes:
+          - position/rotation use array format [x, y, z] for token efficiency (matches catalog format)
+          - semanticPoints format is [name, x, y, z] where x,y,z are world position coordinates
+
+      implementation_note: |
+        Unity's transform system already handles rotation math.
+        Just read child.transform.position directly - it's in world space.
+        Format as compact tuple to save tokens.
+
+---
+
+# DESIGN DECISIONS
+
+decisions:
+  child_gameobjects_vs_pure_metadata:
+    chosen: "Child GameObjects in prefab hierarchy"
+    rationale:
+      - "Artist-friendly workflow"
+      - "Visible in normal prefab editing"
+      - "Version control friendly (part of prefab asset)"
+      - "No separate files to keep in sync"
+    rejected_alternative: "Separate .json files"
+    rejected_reason: "Harder to sync with prefab changes, easy to lose/orphan"
+
+  container_gameobject:
+    chosen: "Single named container 'SemanticPoints' at prefab root"
+    rationale:
+      - "Easy to find programmatically (transform.Find())"
+      - "Keeps hierarchy clean and organized"
+      - "Clear separation from functional prefab content"
+    rejected_alternative: "Tag/layer system to mark individual children"
+    rejected_reason: "More complex, less discoverable, uses limited tag slots"
+
+  preview_approach:
+    chosen: "PreviewRenderUtility in EditorWindow + SceneView.duringSceneGui"
+    rationale:
+      - "Streamlined workflow in dedicated tool window"
+      - "Flexibility to also edit in Scene view if preferred"
+      - "PreviewRenderUtility = isolated rendering context"
+    rejected_alternative: "Only Scene view editing"
+    rejected_reason: "Forces context switching, less streamlined for batch work"
+
+  prefab_modification_api:
+    chosen: "PrefabUtility.LoadPrefabContents() workflow"
+    rationale:
+      - "Official Unity pattern for modifying prefabs"
+      - "Safe, handles undo/redo properly"
+      - "Doesn't corrupt prefabs"
+      - "Recommended by Unity documentation"
+    rejected_alternative: "Direct asset modification"
+    rejected_reason: "Risky, no undo support, can corrupt prefabs"
+
+  gizmo_visibility:
+    chosen: "Always visible (OnDrawGizmos), user toggles via GameObject active"
+    rationale:
+      - "Easier discovery when editing prefabs"
+      - "User has full control (can deactivate SemanticPoints container)"
+      - "No hidden magic"
+    rejected_alternative: "OnDrawGizmosSelected (only when selected)"
+    rejected_reason: "Requires knowing to select 'SemanticPoints' first"
+
+  semantic_points_simplification:
+    chosen: "All semantic points treated equally, including directional points"
+    rationale:
+      - "Forward/directional points are just semantic points named 'front', 'back', etc."
+      - "No special handling needed - simpler code, less confusion"
+      - "'Create Directions' button auto-generates 6 points at bounds edges"
+      - "User can move them after auto-creation for precise placement"
+    rejected_alternative: "Special 'objectForward' marker with isForwardMarker field"
+    rejected_reason: "Overcomplicated - directional semantics already encoded in the name"
+
+---
+
+# OPEN QUESTIONS / TODO
+
+questions:
+  - "Custom icon for SemanticPoints container?"
+  - "How to handle nested prefabs? (scan recursively?)"
+
+ui_polish_needed:
+  - "Keyboard shortcuts (Del to delete point, F to focus)"
+  - "Drag-and-drop prefabs into tool window"
+  - "Search/filter prefab list"
+  - "Undo/redo support in preview window"
+  - "Copy/paste anchor points between prefabs"
+  - "Import/export anchor point templates"
+
+technical_research_needed:
+  - "PreviewRenderUtility memory management (cleanup on disable)"
+  - "Mouse raycast into PreviewRenderUtility scene"
+  - "Handling prefab variants (inherit parent's anchor points?)"
+  - "Performance with large prefab lists"
+  - "Multi-scene editing support"
+
+---
+
+# IMPLEMENTATION PHASES
+
+phases:
+  phase_1_core_infrastructure:
+    description: "Data structures and scanning"
+    tasks:
+      - "Create SemanticTags.cs component"
+      - "Create SemanticPointMarker.cs component (simplified - no isForwardMarker field)"
+      - "Add semanticTags and semanticPoints to PrefabMetadata.cs"
+      - "Add SemanticPoint class to PrefabMetadata.cs"
+      - "Update PrefabScanner.cs to extract semantic points and tags"
+      - "Test: Manually add SemanticPoints to a prefab, scan, verify data"
+
+  phase_2_editor_tool_shell:
+    description: "Basic EditorWindow structure"
+    tasks:
+      - "Create PrefabSemanticAnnotator.cs EditorWindow"
+      - "Add menu item: Window > Context-Aware Scene Builder > Semantic Annotator"
+      - "Implement 3-panel layout (left/center/right)"
+      - "Left panel: Display prefab list from PrefabRegistryCache"
+      - "Right panel: Basic UI shell (labels, empty sections)"
+
+  phase_3_preview_rendering:
+    description: "3D preview functionality"
+    tasks:
+      - "Set up PreviewRenderUtility in center panel"
+      - "Load selected prefab with PrefabUtility.LoadPrefabContents()"
+      - "Implement orbit camera (mouse drag to rotate)"
+      - "Implement zoom (mouse scroll)"
+      - "Display semantic point gizmos in preview"
+
+  phase_4_point_manipulation:
+    description: "Add/edit/delete semantic points"
+    tasks:
+      - "Add semantic tags UI (comma-separated text field)"
+      - "Add Point button → creates child under SemanticPoints"
+      - "Create Directions button → auto-creates 6 directional points at bounds edges"
+      - "Check for existing directional points before creating, prompt user to replace"
+      - "Rename point via text field in right panel"
+      - "Delete point button"
+      - "Click in preview to select point"
+      - "Handles.PositionHandle() to move selected point in preview"
+      - "Save changes back to prefab with SaveAsPrefabAsset()"
+
+  phase_5_scene_view_integration:
+    description: "Edit points in Scene view"
+    tasks:
+      - "Subscribe to SceneView.duringSceneGui"
+      - "Draw position handles for selected point in Scene view"
+      - "Sync selection between tool window and Scene view"
+      - "Support Undo/Redo"
+
+  phase_6_catalog_and_scene_integration:
+    description: "Make data available to LLM"
+    tasks:
+      - "Update PrefabCatalogGenerator to include semanticTags in JSON"
+      - "Update PrefabCatalogGenerator to include semanticPoints with compact tuple format ['name', x, y, z]"
+      - "Apply token optimizations: arrays for vectors, minified JSON, params/desc rename"
+      - "Update ProjectIndexer to extract semanticPoints with world positions for scene GameObjects"
+      - "Use compact tuple format ['name', x, y, z] in scene context to save tokens"
+      - "Update ContextBuilder positioning guide with semantic points explanation"
+      - "Test catalog: verify semanticTags and semanticPoints appear in prefab catalog"
+      - "Test scene context: verify semanticPoints with world positions appear for instances"
+      - "Test end-to-end: annotate prefab → scan → place in scene → see in both catalog and scene context"
+
+---
+
+# NOTES
+
+notes:
+  - "Research based on Unity 6 (2025) documentation and best practices"
+  - "PreviewRenderUtility is undocumented but widely used in community"
+  - "PrefabUtility.LoadPrefabContents() is the safe modern API for prefab editing"
+  - "SceneView.duringSceneGui is the modern replacement for deprecated onSceneGUIDelegate"
+  - "Gizmos should be semi-transparent (alpha 0.5) to avoid obscuring scene content"
+  - "All editor code must be in Editor folder or wrapped in #if UNITY_EDITOR"
+
+architecture_review_fixes:
+  - "Fixed gizmo implementation: Use Gizmos.DrawSphere() + Handles.Label() with proper editor conditionals"
+  - "Fixed CreateDirectionalPoints: Calculate bounds directly from prefab (doesn't require PrefabMetadata)"
+  - "Fixed scene context format: Use array format [x, y, z] for vectors (matches catalog optimization)"
+  - "Added runtime behavior documentation: SemanticPoints persist in builds (empty transforms, harmless)"
+  - "Ensured consistency: All LLM-facing JSON uses token-optimized formats"
+
+future_enhancements:
+  - "Batch annotation (select multiple prefabs, copy anchor template)"
+  - "AI-assisted anchor point suggestions based on mesh analysis"
+  - "Anchor point snapping (snap to mesh vertices/faces)"
+  - "Visualization modes (wireframe, x-ray to see through mesh)"
+  - "Anchor point validation (warn if offset is outside prefab bounds)"
+  - "Integration with existing scene objects (show anchor points on placed instances)"
