@@ -1,0 +1,58 @@
+EXAMPLE: Wall Consistency - All 4 walls using same semantic point approach
+
+Goal: Create 4 walls around a floor, all using their "back" faces for consistent room boundaries
+
+Given: Floor4m at [0,0,0], rotation [0,0,0], scale [1,1,1]
+  - Floor spans X:[0,4], Y:[-0.05,0], Z:[-4,0] in WORLD space
+  - floor.left world = [0, -0.05, -2.0] (west edge, X=0)
+  - floor.right world = [4.0, -0.05, -2.0] (east edge, X=4)
+  - floor.front world = [2.0, -0.05, 0] (south edge, Z=0)
+  - floor.back world = [2.0, -0.05, -4.0] (north edge, Z=-4)
+
+Wall4m LOCAL semanticPoints:
+  - "back" [2.0, 1.5, -0.121] → back face (points toward LOCAL -Z)
+  - "front" [2.0, 1.5, 0.0] → front face (points toward LOCAL +Z)
+
+CRITICAL CONSISTENCY RULE:
+ALL 4 walls must use the SAME semantic point approach after rotation.
+We choose to align each wall's "back" face to the floor edge.
+
+NORTH WALL (at Z=-4 edge):
+  Rotation: [0,0,0] (no rotation needed)
+  - Wall's "back" LOCAL -Z points WORLD -Z (southward, into room) ✓
+  - wall.back LOCAL [2.0, 1.5, -0.121]
+  - Rotated: [2.0, 1.5, -0.121]
+  - pivot.z = floor.back.z - rotated.z = -4.0 - (-0.121) = -3.879
+  - Result: wall.back world at Z ≈ -4.0 ✓
+
+SOUTH WALL (at Z=0 edge):
+  Rotation: [0,180,0] (flip to face north into room)
+  - Wall's "back" LOCAL -Z becomes WORLD +Z (northward, into room) ✓
+  - wall.back LOCAL [2.0, 1.5, -0.121]
+  - Rotated [0,180,0]: [2.0, 1.5, -0.121] → [-2.0, 1.5, 0.121]
+  - pivot.z = floor.front.z - rotated.z = 0.0 - 0.121 = -0.121
+  - Result: wall.back world at Z ≈ 0.0 ✓
+
+EAST WALL (at X=4 edge):
+  Rotation: [0,90,0] (rotate to face west into room)
+  - Wall's "back" LOCAL -Z becomes WORLD -X (westward, into room) ✓
+  - wall.back LOCAL [2.0, 1.5, -0.121]
+  - Rotated [0,90,0]: [2.0, 1.5, -0.121] → [-0.121, 1.5, -2.0]
+  - pivot.x = floor.right.x - rotated.x = 4.0 - (-0.121) = 4.121
+  - Result: wall.back world at X ≈ 4.0 ✓
+
+WEST WALL (at X=0 edge):
+  Rotation: [0,270,0] (rotate to face east into room)
+  - Wall's "back" LOCAL -Z becomes WORLD +X (eastward, into room) ✓
+  - wall.back LOCAL [2.0, 1.5, -0.121]
+  - Rotated [0,270,0]: [2.0, 1.5, -0.121] → [0.121, 1.5, 2.0]
+  - pivot.x = floor.left.x - rotated.x = 0.0 - 0.121 = -0.121
+  - Result: wall.back world at X ≈ 0.0 ✓
+
+KEY TAKEAWAY:
+All 4 walls use their "back" semantic point (after appropriate rotation) to align with floor edges.
+This creates CONSISTENT room boundaries - all walls are inset by the same amount (~0.121 units).
+
+WRONG APPROACH (inconsistent):
+If we used north wall's "back" but south wall's "front", they would be offset differently,
+creating an inconsistent room where some walls stick out and others are inset.

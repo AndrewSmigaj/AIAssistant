@@ -1,0 +1,99 @@
+EXAMPLE: Book on shelf mounted on wall - Nested vertical placement
+
+Goal: Mount shelf on wall at a chosen height, then place book on the shelf
+
+Given scene:
+  - North wall at [2,0,-3.879], rotation [0,0,0], scale [1,1,1]
+    - northWall.front world = [2.0, 1.5, -4.0]
+
+ShelfWall LOCAL semanticPoints (example prefab):
+  - "back" [0.0, 0.1, -0.05] → back face (mounts flush to wall)
+  - "front" [0.0, 0.1, 0.15] → front lip/edge
+  - "top" [0.0, 0.2, 0.05] → top surface
+  - "bottom" [0.0, 0.0, 0.05] → bottom face
+
+BookStanding LOCAL semanticPoints (example prefab):
+  - "back" [0.0, 0.15, -0.05] → spine
+  - "bottom" [0.0, 0.0, 0.0] → bottom edge
+
+PART 1: Mount shelf on wall at height Y=1.2
+
+Step 1 - Choose rotation:
+  Shelf should face into room → [0,0,0]
+
+Step 2 - Rotate and scale shelf's semantic points:
+  Rotation [0,0,0], scale [1,1,1]:
+  shelf.back rotated/scaled = [0.0, 0.1, -0.05]
+
+Step 3 - Calculate shelf pivot:
+  We want shelf.back to align with wall.front
+
+  Z-axis: shelf.back → northWall.front
+    pivot.z = northWall.front.z - shelf.back.z
+    pivot.z = -4.0 - (-0.05) = -3.95
+
+  Y-axis: User specifies desired height Y=1.2 for shelf.bottom
+    pivot.y = 1.2 - shelf.bottom.y
+    pivot.y = 1.2 - 0.0 = 1.2
+
+  X-axis: Center on wall
+    pivot.x = northWall.front.x - shelf.back.x
+    pivot.x = 2.0 - 0.0 = 2.0
+
+  Shelf pivot: [2.0, 1.2, -3.95]
+
+Step 4 - Verify shelf placement:
+  shelf.back world = [2.0, 1.2, -3.95] + [0.0, 0.1, -0.05]
+                   = [2.0, 1.3, -4.0]
+  northWall.front at Z=-4.0 ✓
+
+  shelf.top world = [2.0, 1.2, -3.95] + [0.0, 0.2, 0.05]
+                  = [2.0, 1.4, -3.9]
+
+PART 2: Place book on shelf (shelf just created, NOT in Scene Context yet)
+
+Step 5 - Calculate shelf.top WORLD (shelf not in Scene Context):
+  shelf.top LOCAL [0.0, 0.2, 0.05]
+  Rotate [0,0,0]: [0.0, 0.2, 0.05]
+  Apply scale [1,1,1]: [0.0, 0.2, 0.05]
+  shelf.top world = shelf.pivot + rotated/scaled
+  shelf.top world = [2.0, 1.2, -3.95] + [0.0, 0.2, 0.05] = [2.0, 1.4, -3.9]
+
+  shelf.front world = [2.0, 1.2, -3.95] + [0.0, 0.1, 0.15] = [2.0, 1.3, -3.8]
+
+Step 6 - Calculate book pivot:
+  Book rotation [0,0,0], scale [1,1,1]:
+  book.back rotated/scaled = [0.0, 0.15, -0.05]
+  book.bottom rotated/scaled = [0.0, 0.0, 0.0]
+
+  Y-axis: book.bottom → shelf.top
+    pivot.y = shelf.top.y - book.bottom.y
+    pivot.y = 1.4 - 0.0 = 1.4
+
+  Z-axis: book.back → shelf.front (spine against front lip)
+    pivot.z = shelf.front.z - book.back.z
+    pivot.z = -3.8 - (-0.05) = -3.75
+
+  X-axis: Center on shelf
+    pivot.x = shelf.front.x - book.back.x
+    pivot.x = 2.0 - 0.0 = 2.0
+
+  Book pivot: [2.0, 1.4, -3.75]
+
+Step 7 - Verify book placement:
+  book.bottom world = [2.0, 1.4, -3.75] + [0.0, 0.0, 0.0]
+                    = [2.0, 1.4, -3.75]
+  shelf.top at Y=1.4 ✓
+
+  book.back world = [2.0, 1.4, -3.75] + [0.0, 0.15, -0.05]
+                  = [2.0, 1.55, -3.8]
+  shelf.front at Z=-3.8 ✓
+
+KEY TAKEAWAY:
+Vertical mounting (shelf on wall) uses:
+- Z-axis: shelf.back → wall.front (flush mounting)
+- Y-axis: User-specified height (not aligning to a surface)
+- X-axis: Centered or positioned as desired
+
+Nested placement (book on shelf) requires calculating shelf's WORLD semantic points
+from its LOCAL points + pivot, since shelf isn't in Scene Context yet.

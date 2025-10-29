@@ -48,17 +48,8 @@ namespace ContextAwareSceneBuilder.Editor
                 {
                     Debug.Log($"[AI Assistant] Processing action: {action.GetDescription()}");
 
-                    // Phase 1 actions - call PlanApplier methods directly (no nested undo groups)
-                    if (action is CreateRectangleAction rectangleAction)
-                    {
-                        result = PlanApplier.CreateRectangleGameObject(rectangleAction, previewMode);
-                    }
-                    else if (action is CreateCircleAction circleAction)
-                    {
-                        result = PlanApplier.CreateCircleGameObject(circleAction, previewMode);
-                    }
-                    // Phase 2 action - dynamic prefab instantiation
-                    else if (action is InstantiatePrefabAction prefabAction)
+                    // Prefab instantiation
+                    if (action is InstantiatePrefabAction prefabAction)
                     {
                         result = InstantiatePrefabGameObject(prefabAction, previewMode);
                     }

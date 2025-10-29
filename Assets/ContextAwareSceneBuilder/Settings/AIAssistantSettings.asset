@@ -12,10 +12,10 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: e671d49b030005a448f6c5e302385699, type: 3}
   m_Name: AIAssistantSettings
   m_EditorClassIdentifier: Assembly-CSharp-Editor::ContextAwareSceneBuilder.Editor.AIAssistantSettings
-  Model: gpt-5-mini
+  Model: o4-mini
   ReasoningEffort: 1
   Verbosity: 1
-  TokenBudget: 50000
+  TokenBudget: 80000
   AutoIndexOnSave: 1
   PreviewMode: 0
   PrefabScanFolder: Assets/ContextAwareSceneBuilder/Examples/Prefabs

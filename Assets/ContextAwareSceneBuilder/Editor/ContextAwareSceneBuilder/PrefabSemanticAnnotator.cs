@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
 using UnityEditor;
+using UnityEditor.SceneManagement;
 
 namespace ContextAwareSceneBuilder.Editor
 {
@@ -14,6 +15,7 @@ namespace ContextAwareSceneBuilder.Editor
         // State
         private string _selectedPrefabPath;
         private List<PrefabMetadata> _prefabs;
+        private string _pendingPrefabToOpen = null;
 
         // UI scroll positions
         private Vector2 _leftScrollPos;
@@ -39,6 +41,15 @@ namespace ContextAwareSceneBuilder.Editor
         void OnEnable()
         {
             LoadPrefabList();
+        }
+
+        /// <summary>
+        /// Called when window is disabled. Cleanup event subscriptions.
+        /// </summary>
+        void OnDisable()
+        {
+            // Clean up event subscription when window closes
+            PrefabStage.prefabStageOpened -= OnPrefabStageOpened;
         }
 
         /// <summary>
@@ -326,7 +337,7 @@ namespace ContextAwareSceneBuilder.Editor
         }
 
         /// <summary>
-        /// Opens the selected prefab in Prefab Mode for editing.
+        /// Opens the selected prefab in Prefab Mode for editing and selects the SemanticPoints container.
         /// </summary>
         void OpenPrefabInPrefabMode()
         {
@@ -343,8 +354,43 @@ namespace ContextAwareSceneBuilder.Editor
                 return;
             }
 
+            // Store which prefab we're trying to open
+            _pendingPrefabToOpen = _selectedPrefabPath;
+
+            // Unsubscribe then resubscribe to prevent duplicate handlers
+            PrefabStage.prefabStageOpened -= OnPrefabStageOpened;
+            PrefabStage.prefabStageOpened += OnPrefabStageOpened;
+
             AssetDatabase.OpenAsset(prefabAsset);
-            Debug.Log($"[Semantic Annotator] Opened {prefabAsset.name} in Prefab Mode");
+            Debug.Log($"[Semantic Annotator] Opening {prefabAsset.name} in Prefab Mode...");
+        }
+
+        /// <summary>
+        /// Called when any prefab stage is opened. Selects SemanticPoints if it's our prefab.
+        /// </summary>
+        void OnPrefabStageOpened(PrefabStage stage)
+        {
+            // Only process if this is the prefab we're waiting for
+            if (stage.assetPath != _pendingPrefabToOpen)
+                return;
+
+            // Unsubscribe immediately to avoid processing future prefab opens
+            PrefabStage.prefabStageOpened -= OnPrefabStageOpened;
+            _pendingPrefabToOpen = null;
+
+            // Find and select SemanticPoints container
+            Transform semanticPointsContainer = stage.prefabContentsRoot.transform.Find("SemanticPoints");
+
+            if (semanticPointsContainer != null)
+            {
+                Selection.activeGameObject = semanticPointsContainer.gameObject;
+                EditorGUIUtility.PingObject(semanticPointsContainer.gameObject);
+                Debug.Log("[Semantic Annotator] Selected SemanticPoints container in hierarchy");
+            }
+            else
+            {
+                Debug.LogWarning($"[Semantic Annotator] No SemanticPoints container found. Create points first using '+ Add Point' or 'Create Directions'.");
+            }
         }
 
         /// <summary>

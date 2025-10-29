@@ -1,0 +1,35 @@
+EXAMPLE 2: Placing lamp on SCALED table (just created, not in Scene Context yet)
+
+Goal: Place lamp on top of scaled table
+
+Given: Table just created at position [3.5,0,4.2], rotation [0,0,0], scale [0.341,0.341,0.341]
+
+Step 1 - Analyze LOCAL semantic points:
+
+  TableSquareMedium LOCAL:
+    "top" [0.0, 2.383, 0.0] → top surface at LOCAL Y=2.383
+
+  LampSmall LOCAL:
+    "bottom" [0.005, 0.002, -0.008] → bottom slightly offset from pivot
+
+Step 2 - Choose rotation:
+  No special orientation needed → [0,0,0]
+
+Step 3 - Calculate table's WORLD "top" (NOT in Scene Context yet):
+  CRITICAL: Table is SCALED, so we MUST multiply by scale!
+  table.top LOCAL [0.0,2.383,0.0]
+  Rotate [0,0,0]: no rotation change
+  Apply scale: [0.0,2.383,0.0] ⊙ [0.341,0.341,0.341] = [0.0, 0.813, 0.0]
+  table.top world = [3.5,0,4.2] + [0.0,0.813,0.0] = [3.5, 0.813, 4.2]
+
+Step 4 - Calculate lamp pivot (rotation [0,0,0], scale [1,1,1]):
+  lamp.bottom LOCAL [0.005,0.002,-0.008]
+  Rotate [0,0,0]: [0.005,0.002,-0.008] → [0.005,0.002,-0.008]
+  Apply scale [1,1,1]: [0.005,0.002,-0.008] ⊙ [1,1,1] = [0.005,0.002,-0.008]
+  pivot = table.top.world - lamp.bottom.rotated_scaled
+  pivot = [3.5,0.813,4.2] - [0.005,0.002,-0.008] = [3.495, 0.811, 4.208]
+
+Step 5 - Verify:
+  lamp.bottom world = [3.495,0.811,4.208] + [0.005,0.002,-0.008] = [3.5, 0.813, 4.2]
+  table.top world = [3.5, 0.813, 4.2] ✓
+  NOTE: If we had FORGOTTEN table's scale, lamp would be at Y=2.383 (hovering 1.57m too high!)

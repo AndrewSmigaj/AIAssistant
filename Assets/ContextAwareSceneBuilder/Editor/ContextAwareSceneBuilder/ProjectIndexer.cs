@@ -108,32 +108,54 @@ namespace ContextAwareSceneBuilder.Editor
                         // Open scene additively (don't close current scenes)
                         Scene scene = EditorSceneManager.OpenScene(scenePath, OpenSceneMode.Additive);
 
-                        // Build scene info
-                        var sceneInfo = new SceneInfo
-                        {
-                            sceneName = scene.name,
-                            scenePath = scenePath,
-                            rootObjects = new List<GameObjectInfo>()
-                        };
+                        // Build minified JSON manually (token-optimized for LLM)
+                        var sb = new StringBuilder();
+                        sb.Append("{");
+                        sb.Append($"\"sceneName\":\"{EscapeJson(scene.name)}\",");
+                        sb.Append($"\"scenePath\":\"{EscapeJson(scenePath)}\",");
+                        sb.Append("\"rootObjects\":[");
 
                         // Get root GameObjects
                         GameObject[] rootGOs = scene.GetRootGameObjects();
-                        foreach (GameObject go in rootGOs)
+                        for (int i = 0; i < rootGOs.Length; i++)
                         {
-                            sceneInfo.rootObjects.Add(new GameObjectInfo
+                            GameObject go = rootGOs[i];
+
+                            sb.Append("{");
+                            sb.Append($"\"instanceId\":{go.GetInstanceID()},");
+                            sb.Append($"\"name\":\"{EscapeJson(go.name)}\",");
+                            sb.Append($"\"active\":{(go.activeInHierarchy ? "true" : "false")},");
+                            sb.Append($"\"position\":{FormatVector3Array(go.transform.position)},");
+                            sb.Append($"\"rotation\":{FormatVector3Array(go.transform.eulerAngles)},");
+                            sb.Append($"\"scale\":{FormatVector3Array(go.transform.localScale)},");
+                            sb.Append($"\"childCount\":{go.transform.childCount}");
+
+                            // Extract semantic points with world positions (if present)
+                            Transform semanticPointsContainer = go.transform.Find("SemanticPoints");
+                            if (semanticPointsContainer != null && semanticPointsContainer.childCount > 0)
                             {
-                                name = go.name,
-                                active = go.activeInHierarchy,
-                                position = new Vector3Serializable(go.transform.position),
-                                rotation = new Vector3Serializable(go.transform.eulerAngles),
-                                scale = new Vector3Serializable(go.transform.localScale),
-                                childCount = go.transform.childCount,
-                                instanceId = go.GetInstanceID()
-                            });
+                                sb.Append(",\"semanticPoints\":[");
+                                for (int p = 0; p < semanticPointsContainer.childCount; p++)
+                                {
+                                    Transform child = semanticPointsContainer.GetChild(p);
+                                    Vector3 worldPos = child.position;
+                                    sb.Append($"[\"{EscapeJson(child.name)}\",{CleanFloat(worldPos.x)},{CleanFloat(worldPos.y)},{CleanFloat(worldPos.z)}]");
+                                    if (p < semanticPointsContainer.childCount - 1)
+                                        sb.Append(",");
+                                }
+                                sb.Append("]");
+                            }
+
+                            sb.Append("}");
+
+                            if (i < rootGOs.Length - 1)
+                                sb.Append(",");
                         }
 
-                        // Serialize and write
-                        string json = JsonUtility.ToJson(sceneInfo, true);
+                        sb.Append("]}");
+
+                        // Write artifact
+                        string json = sb.ToString();
                         string outputPath = Path.Combine(SCENES_ARTIFACTS, $"{scene.name}.json");
 
                         if (WriteArtifactIfChanged(outputPath, json))
@@ -310,6 +332,43 @@ namespace ContextAwareSceneBuilder.Editor
             {
                 Directory.CreateDirectory(directory);
             }
+        }
+
+        // ============================================================================
+        // Helper Methods for JSON Generation with Token Optimization
+        // ============================================================================
+
+        /// <summary>
+        /// Formats Vector3 as compact JSON array with cleaned float values.
+        /// Token-optimized: [x,y,z] instead of {"x":x,"y":y,"z":z}
+        /// </summary>
+        private static string FormatVector3Array(Vector3 v)
+        {
+            return $"[{CleanFloat(v.x)},{CleanFloat(v.y)},{CleanFloat(v.z)}]";
+        }
+
+        /// <summary>
+        /// Formats float with 3 decimal places, rounding floating point noise to zero.
+        /// </summary>
+        private static string CleanFloat(float f)
+        {
+            if (Math.Abs(f) < 0.0001f)
+                return "0.0";
+            return f.ToString("F3");
+        }
+
+        /// <summary>
+        /// Escapes special characters for JSON string embedding.
+        /// </summary>
+        private static string EscapeJson(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return "";
+            return text
+                .Replace("\\", "\\\\")
+                .Replace("\"", "\\\"")
+                .Replace("\n", "\\n")
+                .Replace("\r", "\\r")
+                .Replace("\t", "\\t");
         }
     }
 

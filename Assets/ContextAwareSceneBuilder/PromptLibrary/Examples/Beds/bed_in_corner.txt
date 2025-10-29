@@ -1,0 +1,70 @@
+EXAMPLE: Bed in northwest corner - Combining multiple axes
+
+Goal: Place bed in northwest corner with headboard against north wall and left side against west wall
+
+Given scene with floor and 4 walls:
+  - Floor at [0,0,0]
+  - North wall at [2,0,-3.879], rotation [0,0,0]
+    - northWall.front world = [2.0, 1.5, -4.0]
+  - West wall at [-0.121,0,-2], rotation [0,270,0]
+    - westWall.front world = [0.0, 1.5, -2.0]
+  - floor.top world = [2.0, 0.0, -2.0]
+
+BedDouble LOCAL semanticPoints:
+  - "back" [0.0, 0.4, 1.000] → headboard (Z positive, points north)
+  - "front" [0.0, 0.4, -1.070] → foot of bed (Z negative, points south)
+  - "left" [-1.0, 0.4, 0.0] → left side (X negative, points west)
+  - "right" [1.0, 0.4, 0.0] → right side (X positive, points east)
+  - "bottom" [0.005, 0.002, -0.008]
+
+Step 1 - Choose rotation:
+  Bed should face into room (foot toward south, headboard toward north) → [0,0,0]
+
+Step 2 - Rotate bed's LOCAL semantic points:
+  Rotation [0,0,0] formula: [x,y,z] → [x,y,z] (no change)
+
+  bed.back rotated = [0.0, 0.4, 1.000]
+  bed.left rotated = [-1.0, 0.4, 0.0]
+  bed.bottom rotated = [0.005, 0.002, -0.008]
+
+Step 3 - Apply scale [1,1,1]:
+  bed.back scaled = [0.0, 0.4, 1.000]
+  bed.left scaled = [-1.0, 0.4, 0.0]
+  bed.bottom scaled = [0.005, 0.002, -0.008]
+
+Step 4 - Calculate pivot PER-AXIS:
+
+  A) Y-axis: bed.bottom → floor.top
+     pivot.y = floor.top.y - bed.bottom.y
+     pivot.y = 0.0 - 0.002 = -0.002
+
+  B) Z-axis: bed.back → northWall.front (headboard against north wall)
+     pivot.z = northWall.front.z - bed.back.z
+     pivot.z = -4.0 - 1.000 = -5.000
+
+  C) X-axis: bed.left → westWall.front (left side against west wall)
+     pivot.x = westWall.front.x - bed.left.x
+     pivot.x = 0.0 - (-1.0) = 1.0
+
+  Final pivot: [1.0, -0.002, -5.000]
+
+Step 5 - Verify EACH AXIS:
+  bed.bottom world = [1.0, -0.002, -5.000] + [0.005, 0.002, -0.008]
+                   = [1.005, 0.0, -5.008]
+  floor.top at Y=0.0 ✓
+
+  bed.back world = [1.0, -0.002, -5.000] + [0.0, 0.4, 1.000]
+                 = [1.0, 0.398, -4.0]
+  northWall.front at Z=-4.0 ✓
+
+  bed.left world = [1.0, -0.002, -5.000] + [-1.0, 0.4, 0.0]
+                 = [0.0, 0.398, -5.000]
+  westWall.front at X=0.0 ✓
+
+KEY TAKEAWAY:
+Corner placement requires combining semantic points from DIFFERENT axes:
+- Y-axis uses bed.bottom → floor.top
+- Z-axis uses bed.back → northWall.front
+- X-axis uses bed.left → westWall.front
+
+Each axis is calculated independently, then combined into final pivot [1.0, -0.002, -5.000].

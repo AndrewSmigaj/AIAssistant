@@ -1,0 +1,56 @@
+EXAMPLE 1: Wall at EAST edge of floor
+
+Goal: Place wall at floor's right (east) edge, back face against edge, facing inward
+
+Given: Floor4m created at position [0,0,0], rotation [0,0,0], scale [1,1,1]
+
+Step 1 - Analyze LOCAL semantic points:
+
+  Floor4m LOCAL (from Prefab Catalog):
+    "right" [4.0, -0.05, -2.0] → right edge is at LOCAL X=4
+    "top" [2.0, 0.0, -2.0] → top surface at LOCAL Y=0
+
+  Wall4m LOCAL (from Prefab Catalog):
+    "back" [2.0, 1.5, -0.121] → back face at LOCAL Z ≈ -0.121 (points toward -Z)
+    "bottom" [2.0, 0.0, -0.061] → bottom at LOCAL Y=0
+
+Step 2 - Choose rotation:
+
+  Goal: Wall's back face (which points LOCAL -Z) should point WORLD -X (inward/westward)
+
+  Test rotations:
+    [0,90,0]: LOCAL Z → WORLD +X, so LOCAL -Z → WORLD -X ✓ CORRECT!
+    [0,270,0]: LOCAL Z → WORLD -X, so LOCAL -Z → WORLD +X ✗ (wrong, faces outward)
+
+  Chosen: [0,90,0]
+
+Step 3 - Calculate floor's WORLD semantic points:
+  floor.right world = [0,0,0] + [4.0,-0.05,-2.0] = [4.0, -0.05, -2.0]
+  floor.top world = [0,0,0] + [2.0,0.0,-2.0] = [2.0, 0.0, -2.0]
+
+Step 4 - Calculate wall pivot PER-AXIS (rotation [0,90,0], scale [1,1,1]):
+
+  Rotation [0,90,0] formula: LOCAL [x,y,z] → WORLD [z, y, -x]
+
+  A) Y-axis: wall.bottom → floor.top
+     wall.bottom LOCAL [2.0,0.0,-0.061]
+     Rotate [0,90,0]: [2.0,0.0,-0.061] → [-0.061, 0.0, -2.0]
+     Apply scale [1,1,1]: [-0.061, 0.0, -2.0]
+     pivot.y = floor.top.y - rotated.y = 0.0 - 0.0 = 0.0
+
+  B) X-axis: wall.back → floor.right
+     wall.back LOCAL [2.0,1.5,-0.121]
+     Rotate [0,90,0]: [2.0,1.5,-0.121] → [-0.121, 1.5, -2.0]
+     Apply scale [1,1,1]: [-0.121, 1.5, -2.0]
+     pivot.x = floor.right.x - rotated.x = 4.0 - (-0.121) = 4.121
+
+  C) Z-axis: Unconstrained (let wall center naturally)
+     Using rotated wall.back.z: pivot.z = floor.right.z - rotated.z = -2.0 - (-2.0) = 0.0
+
+  Final pivot: [4.121, 0.0, 0.0]
+
+Step 5 - Verify:
+  wall.back world = [4.121, 0.0, 0.0] + [-0.121, 1.5, -2.0] = [4.0, 1.5, -2.0]
+  floor.right at X=4.0 ✓
+  wall.bottom world = [4.121, 0.0, 0.0] + [-0.061, 0.0, -2.0] = [4.06, 0.0, -2.0]
+  floor.top at Y=0.0 ✓

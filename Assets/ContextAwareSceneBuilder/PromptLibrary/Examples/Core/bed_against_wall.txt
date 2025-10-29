@@ -1,0 +1,45 @@
+EXAMPLE 3: Bed against north wall
+
+Goal: Place bed with headboard (back) against north wall
+
+Given: Floor at [0,0,0] with north wall at [2,0,-4.121], rotation [0,0,0], scale [1,1,1]
+
+Step 1 - Analyze LOCAL semantic points:
+
+  BedDouble LOCAL:
+    "front" [0.0, 0.4, -1.070] → foot of bed (Z negative, points south)
+    "back" [0.0, 0.4, 1.000] → headboard (Z positive, points north)
+    "bottom" [0.005, 0.002, -0.008]
+
+  Wall4m (north) world semantic points (from Scene Context):
+    "front" → [2.0, 1.5, -4.0] (south-facing, into room)
+
+Step 2 - Choose rotation:
+  Bed should face into room (foot toward south) → [0,0,0] (no rotation)
+
+Step 3 - Get wall's WORLD "front" (from Scene Context):
+  northWall.front world = [2.0, 1.5, -4.0]
+  floor.top world = [2.0, 0.0, -2.0]
+
+Step 4 - Calculate bed pivot PER-AXIS:
+
+  A) Y-axis: bed.bottom → floor.top
+     bed.bottom LOCAL [0.005,0.002,-0.008]
+     Rotate [0,0,0]: [0.005,0.002,-0.008] → [0.005,0.002,-0.008]
+     Apply scale [1,1,1]: [0.005,0.002,-0.008] ⊙ [1,1,1] = [0.005,0.002,-0.008]
+     pivot.y = floor.top.y - rotated.y = 0.0 - 0.002 = -0.002
+
+  B) Z-axis: bed.back → wall.front (headboard to wall)
+     bed.back LOCAL [0.0,0.4,1.000]
+     Rotate [0,0,0]: [0.0,0.4,1.000] → [0.0,0.4,1.000]
+     Apply scale [1,1,1]: [0.0,0.4,1.000] ⊙ [1,1,1] = [0.0,0.4,1.000]
+     pivot.z = wall.front.z - rotated.z = -4.0 - 1.000 = -5.000
+
+  C) X-axis: Center on wall
+     pivot.x = wall.front.x - rotated.x = 2.0 - 0.0 = 2.0
+
+  Final pivot: [2.0, -0.002, -5.000]
+
+Step 5 - Verify:
+  bed.back world = [2.0,-0.002,-5.000] + [0.0,0.4,1.000] = [2.0, 0.398, -4.0]
+  wall.front at Z=-4.0 ✓ (headboard against wall)

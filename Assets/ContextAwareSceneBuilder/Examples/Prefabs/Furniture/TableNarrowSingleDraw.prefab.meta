@@ -1,14 +1,7 @@
 fileFormatVersion: 2
-guid: c4f4e7a797f707e47a431ce4654787ff
+guid: f6bc24853cf7b1f43876c4d040881d07
 PrefabImporter:
   externalObjects: {}
   userData: 
   assetBundleName: 
   assetBundleVariant: 
-AssetOrigin:
-  serializedVersion: 1
-  productId: 257122
-  packageName: Interior House Assets | URP
-  packageVersion: 1.0
-  assetPath: Assets/UnityTechnologies/Basic Asset Pack Interior/Prefabs/Furniture/TableNarrowSingleDraw.prefab
-  uploadId: 615370

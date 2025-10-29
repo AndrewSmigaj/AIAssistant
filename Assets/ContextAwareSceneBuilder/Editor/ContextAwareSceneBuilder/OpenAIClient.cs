@@ -4,6 +4,7 @@ using System.Text;
 using UnityEngine;
 using UnityEngine.Networking;
 using SimpleJSON;
+using UnityEditor;
 
 namespace ContextAwareSceneBuilder.Editor
 {
@@ -16,54 +17,17 @@ namespace ContextAwareSceneBuilder.Editor
     {
         private const string API_ENDPOINT = "https://api.openai.com/v1/responses";
 
-        // Fallback tool definitions for GPT-5 function calling (rectangle/circle from Phase 1)
-        // Used when no prefabs are available or selected
-        public const string FALLBACK_TOOLS_JSON = @"[
-  {
-    ""type"": ""function"",
-    ""name"": ""createRectangle"",
-    ""description"": ""Creates a rectangle sprite GameObject in the scene at the specified world position"",
-    ""parameters"": {
-      ""type"": ""object"",
-      ""properties"": {
-        ""name"": { ""type"": ""string"", ""description"": ""GameObject name"" },
-        ""x"": { ""type"": ""number"", ""description"": ""World X position"" },
-        ""y"": { ""type"": ""number"", ""description"": ""World Y position"" },
-        ""width"": { ""type"": ""number"", ""description"": ""Width in world units"" },
-        ""height"": { ""type"": ""number"", ""description"": ""Height in world units"" },
-        ""color"": { ""type"": ""string"", ""description"": ""Hex color like #FF0000"" }
-      },
-      ""required"": [""name"", ""x"", ""y"", ""width"", ""height"", ""color""]
-    }
-  },
-  {
-    ""type"": ""function"",
-    ""name"": ""createCircle"",
-    ""description"": ""Creates a circle sprite GameObject in the scene at the specified world position"",
-    ""parameters"": {
-      ""type"": ""object"",
-      ""properties"": {
-        ""name"": { ""type"": ""string"", ""description"": ""GameObject name"" },
-        ""x"": { ""type"": ""number"", ""description"": ""World X position"" },
-        ""y"": { ""type"": ""number"", ""description"": ""World Y position"" },
-        ""radius"": { ""type"": ""number"", ""description"": ""Radius in world units"" },
-        ""color"": { ""type"": ""string"", ""description"": ""Hex color like #00FF00"" }
-      },
-      ""required"": [""name"", ""x"", ""y"", ""radius"", ""color""]
-    }
-  }
-]";
-
         /// <summary>
         /// Sends a request to OpenAI Responses API and returns parsed ActionPlan.
         /// </summary>
         /// <param name="settings">Settings containing API key, model, verbosity, reasoning effort</param>
-        /// <param name="contextPack">Context pack from ContextBuilder</param>
+        /// <param name="systemMessage">System role message (algorithm/rules with high priority)</param>
+        /// <param name="userMessage">User role message (context data + user request)</param>
         /// <param name="previousResponseId">Previous response ID for conversation continuity (null for first message)</param>
         /// <param name="toolOutputs">Tool execution results to submit (null if no tools were executed)</param>
         /// <param name="toolsJson">Dynamic tools JSON from DynamicToolGenerator (null for fallback rectangle/circle)</param>
         /// <returns>ActionPlan with response ID, message, actions, or error</returns>
-        public static ActionPlan SendRequest(AIAssistantSettings settings, string contextPack, string previousResponseId = null, List<ActionResult> toolOutputs = null, string toolsJson = null)
+        public static ActionPlan SendRequest(AIAssistantSettings settings, string systemMessage, string userMessage, string previousResponseId = null, List<ActionResult> toolOutputs = null, string toolsJson = null)
         {
             // Validate inputs
             if (settings == null)
@@ -77,7 +41,7 @@ namespace ContextAwareSceneBuilder.Editor
             }
 
             // Build request JSON
-            string requestJson = BuildRequestBody(settings, contextPack, previousResponseId, toolOutputs, toolsJson);
+            string requestJson = BuildRequestBody(settings, systemMessage, userMessage, previousResponseId, toolOutputs, toolsJson);
             Debug.Log($"[AI Assistant] Request JSON length: {requestJson.Length} chars");  // DEBUG
             if (toolOutputs != null && toolOutputs.Count > 0)
             {
@@ -91,17 +55,17 @@ namespace ContextAwareSceneBuilder.Editor
 
         /// <summary>
         /// Builds the JSON request body for OpenAI Responses API.
-        /// Uses string template for simplicity and safety.
+        /// Creates messages array with system and user roles for proper priority.
         /// </summary>
-        private static string BuildRequestBody(AIAssistantSettings settings, string contextPack, string previousResponseId, List<ActionResult> toolOutputs, string toolsJson)
+        private static string BuildRequestBody(AIAssistantSettings settings, string systemMessage, string userMessage, string previousResponseId, List<ActionResult> toolOutputs, string toolsJson)
         {
             // Get settings values
             string model = settings.Model;
             string verbosity = settings.GetVerbosityString();
             string reasoningEffort = settings.GetReasoningEffortString();
 
-            // Use provided tools or fallback to rectangle/circle
-            string toolsToUse = toolsJson ?? FALLBACK_TOOLS_JSON;
+            // Use provided tools (no fallback in batch architecture)
+            string toolsToUse = toolsJson ?? "[]";
 
             // Build previous_response_id field (omit entirely if null)
             string prevIdField = string.IsNullOrEmpty(previousResponseId)
@@ -112,48 +76,85 @@ namespace ContextAwareSceneBuilder.Editor
             string inputField;
             if (toolOutputs != null && toolOutputs.Count > 0)
             {
-                // When submitting tool outputs, input must be an array of function_call_output objects
+                // When submitting tool outputs, input is an array of outputs (not messages)
+                // System/user messages are already in the conversation via previous_response_id
+
+                // Group results by callId (supports batch operations)
+                var groupedByCallId = new Dictionary<string, List<ActionResult>>();
+
+                foreach (var result in toolOutputs)
+                {
+                    string callId = result.Action.GetCallId();
+                    if (!groupedByCallId.ContainsKey(callId))
+                    {
+                        groupedByCallId[callId] = new List<ActionResult>();
+                    }
+                    groupedByCallId[callId].Add(result);
+                }
+
+                // Build outputs array - one per callId
                 var outputsJson = new StringBuilder();
                 outputsJson.Append("[\n");
 
-                for (int i = 0; i < toolOutputs.Count; i++)
+                int groupIndex = 0;
+                foreach (var kvp in groupedByCallId)
                 {
-                    var result = toolOutputs[i];
-                    string callId = result.Action.GetCallId();
+                    string callId = kvp.Key;
+                    List<ActionResult> results = kvp.Value;
 
-                    // Build output JSON
-                    string outputContent;
-                    if (result.Success)
+                    // Build result array for this callId
+                    var resultArray = new StringBuilder();
+                    resultArray.Append("[");
+
+                    for (int i = 0; i < results.Count; i++)
                     {
-                        // Include instanceId and name in success output
-                        // instanceId is required (throws if null - that's our bug to fix)
-                        int instanceId = result.InstanceId.Value;
+                        var result = results[i];
 
-                        // Safely get object name (might be null or destroyed)
-                        string objectName = "unknown";
-                        if (result.CreatedObject != null)
+                        if (result.Success)
                         {
-                            try
+                            if (result.InstanceId.HasValue)
                             {
-                                objectName = result.CreatedObject.name;
+                                int instanceId = result.InstanceId.Value;
+                                string objectName = "unknown";
+                                if (result.CreatedObject != null)
+                                {
+                                    try
+                                    {
+                                        objectName = result.CreatedObject.name;
+                                    }
+                                    catch
+                                    {
+                                        objectName = "destroyed";
+                                    }
+                                }
+                                resultArray.Append($"{{\\\"status\\\": \\\"success\\\", \\\"instanceId\\\": {instanceId}, \\\"name\\\": \\\"{EscapeJsonString(objectName)}\\\"}}");
                             }
-                            catch
+                            else
                             {
-                                objectName = "destroyed";
+                                // Delete action - no instanceId
+                                resultArray.Append($"{{\\\"status\\\": \\\"success\\\"}}");
                             }
                         }
+                        else
+                        {
+                            resultArray.Append($"{{\\\"status\\\": \\\"error\\\", \\\"message\\\": \\\"{EscapeJsonString(result.ErrorMessage ?? "unknown error")}\\\"}}");
+                        }
 
-                        outputContent = $"{{\\\"status\\\": \\\"success\\\", \\\"instanceId\\\": {instanceId}, \\\"name\\\": \\\"{EscapeJsonString(objectName)}\\\"}}";
+                        if (i < results.Count - 1)
+                        {
+                            resultArray.Append(",");
+                        }
                     }
-                    else
+
+                    resultArray.Append("]");
+
+                    outputsJson.Append($"    {{\"type\": \"function_call_output\", \"call_id\": \"{callId}\", \"output\": \"{resultArray}\"}}");
+
+                    if (groupIndex < groupedByCallId.Count - 1)
                     {
-                        outputContent = $"{{\\\"status\\\": \\\"error\\\", \\\"message\\\": \\\"{EscapeJsonString(result.ErrorMessage ?? "unknown error")}\\\"}}";
-                    }
-
-                    outputsJson.Append($"    {{\"type\": \"function_call_output\", \"call_id\": \"{callId}\", \"output\": \"{outputContent}\"}}");
-
-                    if (i < toolOutputs.Count - 1)
                         outputsJson.Append(",\n");
+                    }
+                    groupIndex++;
                 }
 
                 outputsJson.Append("\n  ]");
@@ -161,9 +162,14 @@ namespace ContextAwareSceneBuilder.Editor
             }
             else
             {
-                // Regular text input
-                string escapedContext = EscapeJsonString(contextPack);
-                inputField = $"\"{escapedContext}\"";
+                // Initial request: send messages array with system (high priority) and user roles
+                string escapedSystem = EscapeJsonString(systemMessage);
+                string escapedUser = EscapeJsonString(userMessage);
+
+                inputField = $@"[
+    {{""role"": ""system"", ""content"": ""{escapedSystem}""}},
+    {{""role"": ""user"", ""content"": ""{escapedUser}""}}
+  ]";
             }
 
             // Build request with string template
@@ -216,12 +222,12 @@ namespace ContextAwareSceneBuilder.Editor
                 // SECURITY: NEVER log API key or Authorization header
                 Debug.Log("[AI Assistant] Sending API request...");
 
-                request.SendWebRequest();
+                var asyncOp = request.SendWebRequest();
 
-                // Synchronous wait (acceptable for editor tool)
-                while (!request.isDone)
+                // Wait for completion (blocking but necessary for synchronous API)
+                while (!asyncOp.isDone)
                 {
-                    // Wait for completion
+                    System.Threading.Thread.Sleep(50); // Small sleep to avoid busy-wait CPU spinning
                 }
 
                 // Handle connection errors
@@ -444,17 +450,14 @@ namespace ContextAwareSceneBuilder.Editor
                 }
 
                 // Parse based on function type and assign call_id
-                if (functionName == "createRectangle")
+                if (functionName == "instantiateObjects")
                 {
-                    var action = ParseRectangleAction(args);
-                    action.callId = callId;
-                    plan.Actions.Add(action);
-                }
-                else if (functionName == "createCircle")
-                {
-                    var action = ParseCircleAction(args);
-                    action.callId = callId;
-                    plan.Actions.Add(action);
+                    // Batch instantiation - creates multiple actions with SAME callId
+                    var actions = ParseInstantiateObjectsAction(args, callId);
+                    foreach (var action in actions)
+                    {
+                        plan.Actions.Add(action);
+                    }
                 }
                 else if (functionName == "modifyGameObject")
                 {
@@ -480,13 +483,6 @@ namespace ContextAwareSceneBuilder.Editor
                     action.callId = callId;
                     plan.Actions.Add(action);
                 }
-                else if (functionName.StartsWith("create"))
-                {
-                    // Dynamic prefab function (e.g., "createVehiclesRaceCar")
-                    var action = ParsePrefabAction(args, functionName);
-                    action.callId = callId;
-                    plan.Actions.Add(action);
-                }
                 else
                 {
                     Debug.LogWarning($"[AI Assistant] Unknown function: {functionName}");
@@ -500,126 +496,121 @@ namespace ContextAwareSceneBuilder.Editor
         }
 
         /// <summary>
-        /// Parses createRectangle function arguments into CreateRectangleAction.
+        /// Parses instantiateObjects batch arguments into list of InstantiatePrefabActions.
+        /// CRITICAL: All actions share the same callId for output aggregation.
         /// </summary>
-        private static CreateRectangleAction ParseRectangleAction(JSONNode args)
+        /// <param name="args">Function arguments containing objects array</param>
+        /// <param name="callId">Shared call ID for all actions in this batch</param>
+        /// <returns>List of InstantiatePrefabActions</returns>
+        private static List<InstantiatePrefabAction> ParseInstantiateObjectsAction(JSONNode args, string callId)
         {
-            try
+            List<InstantiatePrefabAction> actions = new List<InstantiatePrefabAction>();
+
+            var objectsArray = args["objects"];
+            if (objectsArray == null || !objectsArray.IsArray)
             {
-                return new CreateRectangleAction
-                {
-                    name = args["name"],
-                    x = args["x"].AsFloat,
-                    y = args["y"].AsFloat,
-                    width = args["width"].AsFloat,
-                    height = args["height"].AsFloat,
-                    color = args["color"]
-                };
+                Debug.LogWarning("[AI Assistant] instantiateObjects missing 'objects' array");
+                return actions;
             }
-            catch (Exception ex)
+
+            foreach (var kvp in objectsArray.AsArray)
             {
-                throw new Exception($"Invalid rectangle parameters: {ex.Message}");
-            }
-        }
+                var obj = kvp.Value;
+                if (obj == null) continue;
 
-        /// <summary>
-        /// Parses createCircle function arguments into CreateCircleAction.
-        /// </summary>
-        private static CreateCircleAction ParseCircleAction(JSONNode args)
-        {
-            try
-            {
-                return new CreateCircleAction
+                try
                 {
-                    name = args["name"],
-                    x = args["x"].AsFloat,
-                    y = args["y"].AsFloat,
-                    radius = args["radius"].AsFloat,
-                    color = args["color"]
-                };
-            }
-            catch (Exception ex)
-            {
-                throw new Exception($"Invalid circle parameters: {ex.Message}");
-            }
-        }
+                    // Required fields
+                    string prefabPath = obj["prefabPath"]?.Value;
+                    string name = obj["name"]?.Value ?? "GameObject";
 
-        /// <summary>
-        /// Parses dynamic prefab function arguments into InstantiatePrefabAction.
-        /// Looks up prefab metadata by function name, extracts position and parameters.
-        /// </summary>
-        /// <param name="args">Function arguments from OpenAI</param>
-        /// <param name="functionName">Function name (e.g., "createVehiclesRaceCar")</param>
-        /// <returns>InstantiatePrefabAction ready for execution</returns>
-        private static InstantiatePrefabAction ParsePrefabAction(JSONNode args, string functionName)
-        {
-            try
-            {
-                // Look up prefab metadata by function name
-                PrefabMetadata metadata = PrefabRegistryCache.FindByFunctionName(functionName);
-                if (metadata == null)
-                {
-                    throw new Exception($"No prefab found for function '{functionName}'");
-                }
-
-                // Extract name parameter (always required)
-                string name = args["name"]?.Value ?? "GameObject";
-
-                // Extract position parameters (always required)
-                float x = args["x"].AsFloat;
-                float y = args["y"].AsFloat;
-                float z = args["z"].AsFloat;
-
-                // Extract rotation parameters (optional, default to 0)
-                float rotX = args["rotationX"]?.AsFloat ?? 0f;
-                float rotY = args["rotationY"]?.AsFloat ?? 0f;
-                float rotZ = args["rotationZ"]?.AsFloat ?? 0f;
-
-                // Extract scale parameters (only if at least one is specified, otherwise preserve prefab default)
-                Vector3? scale = null;
-                if (args["scaleX"] != null || args["scaleY"] != null || args["scaleZ"] != null)
-                {
-                    float scaleX = args["scaleX"]?.AsFloat ?? 1f;
-                    float scaleY = args["scaleY"]?.AsFloat ?? 1f;
-                    float scaleZ = args["scaleZ"]?.AsFloat ?? 1f;
-                    scale = new Vector3(scaleX, scaleY, scaleZ);
-                }
-
-                // Extract all other parameters into dictionary
-                Dictionary<string, object> parameters = new Dictionary<string, object>();
-
-                foreach (var kvp in args)
-                {
-                    string key = kvp.Key;
-
-                    // Skip name, position, rotation, and scale parameters (already extracted)
-                    if (key == "name" ||
-                        key == "x" || key == "y" || key == "z" ||
-                        key == "rotationX" || key == "rotationY" || key == "rotationZ" ||
-                        key == "scaleX" || key == "scaleY" || key == "scaleZ")
+                    if (string.IsNullOrEmpty(prefabPath))
                     {
+                        Debug.LogWarning("[AI Assistant] Object missing prefabPath, skipping");
                         continue;
                     }
 
-                    // Add to parameters dictionary (keep as JSONNode for type conversion later)
-                    parameters[key] = kvp.Value;
-                }
+                    // Parse position (required)
+                    var posNode = obj["position"];
+                    if (posNode == null)
+                    {
+                        Debug.LogWarning($"[AI Assistant] Object '{name}' missing position, skipping");
+                        continue;
+                    }
 
-                return new InstantiatePrefabAction
+                    Vector3 position = new Vector3(
+                        posNode["x"].AsFloat,
+                        posNode["y"].AsFloat,
+                        posNode["z"].AsFloat
+                    );
+
+                    // Parse rotation (optional, defaults to zero)
+                    Vector3 rotation = Vector3.zero;
+                    var rotNode = obj["rotation"];
+                    if (rotNode != null)
+                    {
+                        rotation = new Vector3(
+                            rotNode["x"]?.AsFloat ?? 0f,
+                            rotNode["y"]?.AsFloat ?? 0f,
+                            rotNode["z"]?.AsFloat ?? 0f
+                        );
+                    }
+
+                    // Parse scale (optional, null = preserve prefab default)
+                    Vector3? scale = null;
+                    var scaleNode = obj["scale"];
+                    if (scaleNode != null)
+                    {
+                        scale = new Vector3(
+                            scaleNode["x"]?.AsFloat ?? 1f,
+                            scaleNode["y"]?.AsFloat ?? 1f,
+                            scaleNode["z"]?.AsFloat ?? 1f
+                        );
+                    }
+
+                    // Parse parameters (optional)
+                    Dictionary<string, object> parameters = new Dictionary<string, object>();
+                    var paramsNode = obj["parameters"];
+                    if (paramsNode != null && paramsNode.Count > 0)
+                    {
+                        foreach (var paramKvp in paramsNode)
+                        {
+                            parameters[paramKvp.Key] = paramKvp.Value;
+                        }
+                    }
+
+                    // Create action - CRITICAL: All actions share the same callId!
+                    actions.Add(new InstantiatePrefabAction
+                    {
+                        callId = callId,  // Shared across all objects in batch
+                        prefabPath = prefabPath,
+                        name = name,
+                        position = position,
+                        rotation = rotation,
+                        scale = scale,
+                        parameters = parameters
+                    });
+                }
+                catch (Exception ex)
                 {
-                    prefabPath = metadata.prefabPath,
-                    name = name,
-                    position = new Vector3(x, y, z),
-                    rotation = new Vector3(rotX, rotY, rotZ),
-                    scale = scale,
-                    parameters = parameters
-                };
+                    Debug.LogWarning($"[AI Assistant] Failed to parse object in batch: {ex.Message}");
+                    // Continue with other objects (partial failure support)
+                }
             }
-            catch (Exception ex)
+
+            // Log result
+            if (actions.Count > 0)
             {
-                throw new Exception($"Invalid prefab parameters for {functionName}: {ex.Message}");
+                Debug.Log($"[AI Assistant] Parsed {actions.Count} object(s) from batch with callId {callId}");
             }
+            else
+            {
+                Debug.LogWarning($"[AI Assistant] No valid objects parsed from instantiateObjects batch (callId: {callId})");
+            }
+
+            return actions;
         }
+
 
         /// <summary>
         /// Parses modifyGameObject function arguments into ModifyGameObjectAction.

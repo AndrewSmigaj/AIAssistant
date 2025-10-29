@@ -28,6 +28,7 @@ namespace ContextAwareSceneBuilder.Editor
         private string _userPrompt = "";
         private Vector2 _logScrollPosition;
         private List<string> _logEntries;
+        private string _lastAIMessage = ""; // Store last AI response for copying
 
         /// <summary>
         /// MenuItem to open the Context-Aware Scene Builder window.
@@ -91,6 +92,11 @@ namespace ContextAwareSceneBuilder.Editor
             GUILayout.Label("AI Assistant", EditorStyles.boldLabel);
 
             GUILayout.FlexibleSpace();
+
+            if (GUILayout.Button("Copy Last Response", EditorStyles.toolbarButton, GUILayout.Width(130)))
+            {
+                OnCopyLastResponse();
+            }
 
             if (GUILayout.Button("Refresh Index", EditorStyles.toolbarButton, GUILayout.Width(100)))
             {
@@ -223,13 +229,13 @@ namespace ContextAwareSceneBuilder.Editor
                 // Step 2: Build context pack with dynamic tools
                 EditorUtility.DisplayProgressBar("AI Assistant", "Building context...", 0.3f);
 
-                string toolsJson;
-                string contextPack = ContextBuilder.BuildContextPack(_userPrompt, _settings.TokenBudget, out toolsJson);
+                string systemMessage, toolsJson;
+                string userMessage = ContextBuilder.BuildContextPack(_userPrompt, _settings.TokenBudget, out systemMessage, out toolsJson);
 
                 // Step 3: Call OpenAI API with dynamic tools
                 EditorUtility.DisplayProgressBar("AI Assistant", "Calling OpenAI API...", 0.6f);
 
-                var plan = OpenAIClient.SendRequest(_settings, contextPack, _lastResponseId, null, toolsJson);
+                var plan = OpenAIClient.SendRequest(_settings, systemMessage, userMessage, _lastResponseId, null, toolsJson);
 
                 // Step 4: Process response
                 if (!plan.Success)
@@ -241,6 +247,7 @@ namespace ContextAwareSceneBuilder.Editor
                     // Display AI message if present
                     if (!string.IsNullOrEmpty(plan.Message))
                     {
+                        _lastAIMessage = plan.Message; // Store for copy button
                         AppendLog($"[AI] {plan.Message}", LogType.Log);
                     }
 
@@ -350,9 +357,9 @@ namespace ContextAwareSceneBuilder.Editor
                 {
                     EditorUtility.DisplayProgressBar("AI Assistant", "Submitting tool results...", 0.5f);
 
-                    string toolsJson;
-                    string contextPack = ContextBuilder.BuildContextPack("", _settings.TokenBudget, out toolsJson);
-                    var plan = OpenAIClient.SendRequest(_settings, contextPack, _lastResponseId, results, toolsJson);
+                    string systemMessage, toolsJson;
+                    string userMessage = ContextBuilder.BuildContextPack("", _settings.TokenBudget, out systemMessage, out toolsJson);
+                    var plan = OpenAIClient.SendRequest(_settings, systemMessage, userMessage, _lastResponseId, results, toolsJson);
 
                     if (plan.Success && !string.IsNullOrEmpty(plan.Message))
                     {
@@ -405,6 +412,22 @@ namespace ContextAwareSceneBuilder.Editor
         {
             _lastResponseId = null;
             AppendLog("[System] Conversation cleared. Next prompt will start a new conversation.", LogType.Log);
+        }
+
+        /// <summary>
+        /// Copies the last AI response message to the clipboard.
+        /// </summary>
+        void OnCopyLastResponse()
+        {
+            if (!string.IsNullOrEmpty(_lastAIMessage))
+            {
+                EditorGUIUtility.systemCopyBuffer = _lastAIMessage;
+                AppendLog("[System] Copied last AI response to clipboard", LogType.Log);
+            }
+            else
+            {
+                AppendLog("[System] No AI response to copy", LogType.Warning);
+            }
         }
 
         /// <summary>
