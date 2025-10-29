@@ -116,15 +116,8 @@ namespace ContextAwareSceneBuilder.Editor
 
             try
             {
-                // Calculate bounds (size and centerOffset)
-                Vector3 size, centerOffset;
-                bool hasBounds = CalculateBounds(tempInstance, out size, out centerOffset);
-
-                if (!hasBounds)
-                {
-                    Debug.LogWarning($"[AI Assistant] Skipping {prefabAsset.name} - no Renderer or Collider for bounds calculation");
-                    return null;
-                }
+                // Capture prefab's default local scale
+                Vector3 prefabScale = tempInstance.transform.localScale;
 
                 // Scan components on temp instance
                 var components = tempInstance.GetComponents<MonoBehaviour>();
@@ -187,8 +180,7 @@ namespace ContextAwareSceneBuilder.Editor
                     prefabPath = path,
                     prefabTag = category,
                     uniqueFunctionName = uniqueName,
-                    size = size,
-                    centerOffset = centerOffset,
+                    scale = prefabScale,
                     components = componentMetas.ToArray(),
                     semanticTags = semanticTags,
                     semanticPoints = semanticPoints
@@ -486,55 +478,6 @@ namespace ContextAwareSceneBuilder.Editor
             }
 
             return null;
-        }
-
-        /// <summary>
-        /// Calculates bounding box size and center offset for a prefab instance.
-        /// Tries renderers first (for visual bounds), falls back to colliders (for physics bounds).
-        /// </summary>
-        /// <param name="instance">Instantiated prefab (must be in scene)</param>
-        /// <param name="size">Output: Bounding box dimensions (width, height, depth)</param>
-        /// <param name="centerOffset">Output: Offset from pivot to visual center</param>
-        /// <returns>True if bounds calculated successfully, false if no Renderer or Collider found</returns>
-        private static bool CalculateBounds(GameObject instance, out Vector3 size, out Vector3 centerOffset)
-        {
-            // Ensure consistent coordinate space for measurement
-            instance.transform.position = Vector3.zero;
-            instance.transform.rotation = Quaternion.identity;
-            instance.transform.localScale = Vector3.one;
-
-            // Try renderers first (includeInactive captures LODs, toggleable parts, hidden visualizations)
-            Renderer[] renderers = instance.GetComponentsInChildren<Renderer>(includeInactive: true);
-            if (renderers.Length > 0)
-            {
-                Bounds combined = renderers[0].bounds;
-                for (int i = 1; i < renderers.Length; i++)
-                {
-                    combined.Encapsulate(renderers[i].bounds);
-                }
-                size = combined.size;
-                centerOffset = combined.center - instance.transform.position;
-                return true;
-            }
-
-            // Fallback to colliders (for prefabs without renderers but with physics)
-            Collider[] colliders = instance.GetComponentsInChildren<Collider>(includeInactive: true);
-            if (colliders.Length > 0)
-            {
-                Bounds combined = colliders[0].bounds;
-                for (int i = 1; i < colliders.Length; i++)
-                {
-                    combined.Encapsulate(colliders[i].bounds);
-                }
-                size = combined.size;
-                centerOffset = combined.center - instance.transform.position;
-                return true;
-            }
-
-            // No bounds available (empty containers, particle systems without renderers, etc.)
-            size = Vector3.zero;
-            centerOffset = Vector3.zero;
-            return false;
         }
     }
 }

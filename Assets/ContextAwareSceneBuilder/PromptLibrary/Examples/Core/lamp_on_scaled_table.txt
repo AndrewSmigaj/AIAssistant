@@ -2,15 +2,19 @@ EXAMPLE 2: Placing lamp on SCALED table (just created, not in Scene Context yet)
 
 Goal: Place lamp on top of scaled table
 
-Given: Table just created at position [3.5,0,4.2], rotation [0,0,0], scale [0.341,0.341,0.341]
+Given: Table just created at position [3.5,0,4.2], rotation [0,0,0]
 
-Step 1 - Analyze LOCAL semantic points:
+Step 0 - WRITE DOWN scales from Prefab Catalog:
+  TableSquareMedium scale = [0.341, 0.341, 0.341]
+  LampSmall scale = [1.0, 1.0, 1.0]
 
-  TableSquareMedium LOCAL:
-    "top" [0.0, 2.383, 0.0] → top surface at LOCAL Y=2.383
+Step 1 - Analyze LOCAL semantic points from Prefab Catalog:
 
-  LampSmall LOCAL:
-    "bottom" [0.005, 0.002, -0.008] → bottom slightly offset from pivot
+  TableSquareMedium semanticPoints:
+    ["top", 0.0, 2.383, 0.0] → top surface at LOCAL Y=2.383
+
+  LampSmall semanticPoints:
+    ["bottom", 0.005, 0.002, -0.008] → bottom slightly offset from pivot
 
 Step 2 - Choose rotation:
   No special orientation needed → [0,0,0]

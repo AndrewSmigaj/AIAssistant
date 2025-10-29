@@ -47,9 +47,8 @@ namespace ContextAwareSceneBuilder.Editor
                 string description = GenerateDescription(prefab);
                 sb.Append($"\"description\":\"{EscapeJson(description)}\",");
 
-                // Bounds metadata for spatial reasoning
-                sb.Append($"\"size\":{FormatVector3(prefab.size)},");
-                sb.Append($"\"centerOffset\":{FormatVector3(prefab.centerOffset)},");
+                // Prefab default scale for semantic point calculations
+                sb.Append($"\"scale\":{FormatVector3(prefab.scale)},");
 
                 // Semantic tags for LLM understanding (optional)
                 if (prefab.semanticTags != null && prefab.semanticTags.Length > 0)

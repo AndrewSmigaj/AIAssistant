@@ -40,18 +40,12 @@ namespace ContextAwareSceneBuilder.Editor
         public ComponentMetadata[] components;
 
         /// <summary>
-        /// Bounding box dimensions (width, height, depth) in local space.
-        /// Used by GPT-5 to understand object size for spatial fit reasoning.
+        /// Default local scale of the prefab's root transform.
+        /// Used by LLM to calculate world positions of semantic points.
+        /// Example: TableSquareMedium has scale [0.341, 0.341, 0.341]
+        /// Formula: worldPoint = position + rotation * (localPoint ⊙ scale)
         /// </summary>
-        public UnityEngine.Vector3 size;
-
-        /// <summary>
-        /// Offset from GameObject pivot to visual center.
-        /// Calculated as: bounds.center - transform.position
-        /// Used by GPT-5 to calculate visual center: visualCenter = position + centerOffset
-        /// Example: Wall with bottom pivot has centerOffset.y = size.y / 2
-        /// </summary>
-        public UnityEngine.Vector3 centerOffset;
+        public UnityEngine.Vector3 scale;
 
         /// <summary>
         /// Semantic tags describing prefab purpose (e.g., "enemy", "furniture").
