@@ -48,6 +48,13 @@ namespace ContextAwareSceneBuilder.Editor
             sysSb.AppendLine();
             sysSb.AppendLine("BEFORE EVERY PLACEMENT, YOU MUST COMPLETE THIS CHECKLIST:");
             sysSb.AppendLine();
+            sysSb.AppendLine("[ ] Step 0: Confirm object scale (CRITICAL - determines all semantic point positions)");
+            sysSb.AppendLine("    - Retrieve prefab's default scale from Prefab Catalog metadata");
+            sysSb.AppendLine("    - Set object_scale = prefab_default_scale (e.g., TableSquareMedium scale [0.341,0.341,0.341])");
+            sysSb.AppendLine("    - ONLY override if user explicitly specifies a different scale");
+            sysSb.AppendLine("    - Example: TableSquareMedium native scale [0.341,0.341,0.341] makes top at 0.813m, NOT 2.383m");
+            sysSb.AppendLine("    - ABORT if you use [1,1,1] when prefab has different default scale");
+            sysSb.AppendLine();
             sysSb.AppendLine("[ ] Step 1: Identify BOTH semantic points for each axis:");
             sysSb.AppendLine("    - If multiple targets of same type exist (e.g., 4 walls), explicitly identify WHICH target");
             sysSb.AppendLine("      Example: \"NorthWall.front\" not just \"wall.front\" - specify North/South/East/West");
@@ -78,8 +85,14 @@ namespace ContextAwareSceneBuilder.Editor
             sysSb.AppendLine("    - For each semantic point you're aligning:");
             sysSb.AppendLine("    - Get LOCAL coordinates from Prefab Catalog");
             sysSb.AppendLine("    - Multiply by object's scale: localPoint ⊙ object_scale");
-            sysSb.AppendLine("    - Rotate by object's rotation");
+            sysSb.AppendLine("    - Rotate by object's rotation using EXACT formula:");
+            sysSb.AppendLine("      • RotateY(0):   [x,y,z] → [x, y, z]    (no change)");
+            sysSb.AppendLine("      • RotateY(90):  [x,y,z] → [-z, y, x]   (show signs!)");
+            sysSb.AppendLine("      • RotateY(180): [x,y,z] → [-x, y, -z]  (show signs!)");
+            sysSb.AppendLine("      • RotateY(270): [x,y,z] → [z, y, -x]   (show signs!)");
+            sysSb.AppendLine("    - Example: [2.0, 1.5, -0.121] with RotateY(270) → [-0.121, 1.5, -2.0] (NOT [+0.121, ...])");
             sysSb.AppendLine("    - ABORT if you skip scale multiplication!");
+            sysSb.AppendLine("    - ABORT if you get rotation signs wrong - verify against table above!");
             sysSb.AppendLine();
             sysSb.AppendLine("[ ] Step 5: Calculate pivot PER-AXIS");
             sysSb.AppendLine("    - pivot.x = target_point.x - rotated_object_point.x");
@@ -93,6 +106,7 @@ namespace ContextAwareSceneBuilder.Editor
             sysSb.AppendLine("    - Do NOT create object if verification fails!");
             sysSb.AppendLine();
             sysSb.AppendLine("ABSOLUTE RULES:");
+            sysSb.AppendLine("• ALWAYS use prefab's default scale from catalog - NEVER override to [1,1,1] unless user specifies");
             sysSb.AppendLine("• Face/surface alignment REQUIRES semantic points - ABORT if missing");
             sysSb.AppendLine("• NEVER use target.position for semantic alignment - use target.semanticPoints only");
             sysSb.AppendLine("• NEVER skip scale multiplication - even if scale is [1,1,1], show: local ⊙ scale = result");
