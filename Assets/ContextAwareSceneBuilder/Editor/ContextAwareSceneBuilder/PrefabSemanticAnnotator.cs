@@ -257,7 +257,7 @@ namespace ContextAwareSceneBuilder.Editor
         {
             _selectedPrefabPath = prefabPath;
 
-            // Temporarily load to read existing tags
+            // Temporarily load to read existing tags and ensure pivot point exists
             GameObject tempContents = PrefabUtility.LoadPrefabContents(prefabPath);
             if (tempContents == null)
             {
@@ -277,6 +277,9 @@ namespace ContextAwareSceneBuilder.Editor
                 {
                     _semanticTagsText = "";
                 }
+
+                // Auto-add "pivot" semantic point if it doesn't exist
+                EnsurePivotPointExists(tempContents, prefabPath);
             }
             finally
             {
@@ -538,6 +541,40 @@ namespace ContextAwareSceneBuilder.Editor
                 combined.Encapsulate(renderers[i].bounds);
             }
             return combined;
+        }
+
+        /// <summary>
+        /// Ensures the prefab has a "pivot" semantic point at LOCAL [0,0,0].
+        /// Auto-adds it if missing. This allows tracking pivot location in world space.
+        /// </summary>
+        void EnsurePivotPointExists(GameObject prefabContents, string prefabPath)
+        {
+            // Find or create SemanticPoints container
+            Transform container = prefabContents.transform.Find("SemanticPoints");
+            if (container == null)
+            {
+                GameObject containerObj = new GameObject("SemanticPoints");
+                containerObj.transform.SetParent(prefabContents.transform, false);
+                container = containerObj.transform;
+            }
+
+            // Check if "pivot" point already exists
+            Transform pivotPoint = container.Find("pivot");
+            if (pivotPoint != null)
+            {
+                // Pivot point already exists, no action needed
+                return;
+            }
+
+            // Create "pivot" point at LOCAL [0,0,0]
+            GameObject pointObj = new GameObject("pivot");
+            pointObj.transform.SetParent(container, false);
+            pointObj.transform.localPosition = Vector3.zero; // Ensure at [0,0,0]
+            pointObj.AddComponent<SemanticPointMarker>();
+
+            // Save the prefab with the new pivot point
+            PrefabUtility.SaveAsPrefabAsset(prefabContents, prefabPath);
+            Debug.Log($"[Semantic Annotator] Auto-added 'pivot' semantic point at [0,0,0] to {System.IO.Path.GetFileName(prefabPath)}");
         }
     }
 }

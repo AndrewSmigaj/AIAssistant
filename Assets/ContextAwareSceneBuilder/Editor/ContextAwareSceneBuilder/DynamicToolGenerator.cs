@@ -86,7 +86,7 @@ namespace ContextAwareSceneBuilder.Editor
               },
               ""position"": {
                 ""type"": ""object"",
-                ""description"": ""World position (pivot point, NOT visual center - see catalog's centerOffset)"",
+                ""description"": ""World position (pivot point at LOCAL [0,0,0] - see catalog's 'pivot' semantic point)"",
                 ""properties"": {
                   ""x"": {""type"": ""number""},
                   ""y"": {""type"": ""number""},
