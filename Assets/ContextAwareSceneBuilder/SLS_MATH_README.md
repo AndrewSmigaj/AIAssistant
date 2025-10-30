@@ -66,6 +66,16 @@ All rotations are represented as quaternions `[x, y, z, w]` where:
 - `w` = `cos(θ/2)`
 - Identity (no rotation) = `[0, 0, 0, 1]`
 
+### Quaternion Terminology Reference
+
+| Symbol | Meaning | Type |
+|--------|---------|------|
+| `R_ls` | Local → SLS rotation | Per prefab (static) |
+| `R_wl` | Local → World rotation (Unity native) | Per instance |
+| `R_ws` | SLS → World rotation (`R_wl * R_ls⁻¹`) | Per instance |
+| `p_wl` | Pivot position in world | Per instance |
+| `S` | Non-uniform scale `[Sx, Sy, Sz]` | Per instance |
+
 ### Per-Prefab: R_ls (Local → SLS)
 
 **Calculation:**
@@ -137,6 +147,8 @@ Table rotated 90° in world (Y-axis):
 **Coordinates:** LOCAL (truthful to prefab mesh)
 **Includes:** R_ls for transformation to SLS
 
+**Note:** Semantic point coordinates (e.g. "top", "front") are stored as **offsets from the prefab's pivot** in local space, not absolute coordinates. The pivot is at local [0,0,0]. These offsets are transformed through SLS and combined with the instance pivot during world placement.
+
 ### Scene Context (Dynamic)
 
 ```json
@@ -171,6 +183,11 @@ Table rotated 90° in world (Y-axis):
 4. **Clarity:** Normals never scaled (they're directions)
 
 ### Conversion Formulas
+
+**Notation:**
+- `S ⊙ v = [Sx * vx, Sy * vy, Sz * vz]` — componentwise scale (Hadamard product), not matrix multiplication
+- `q * v` — quaternion rotation applied to vector
+- `p_wl` — pivot position in world coordinates
 
 #### Normal (Unit Direction)
 ```
@@ -222,6 +239,26 @@ Calculate:
 
 **Verification:** Table scaled to 34.1% height. Local top at 2.383 → World top at 0.813 ✓
 
+### Example: Rotated Wall (Non-Identity R_ws)
+
+Given:
+```
+Wall rotated 90° around Y in world:
+  R_ws_wall = Quaternion.Euler(0, 90, 0) = [0, 0.707, 0, 0.707]
+  wall.front_sls = [0, 0, 1]  (in SLS, front always +Z)
+  S = [1, 1, 1]               (no scaling)
+  p_wl = [0, 0, 0]            (at origin)
+```
+
+Calculate front normal in world:
+```
+normal_world = R_ws_wall * front_sls
+normal_world = Quaternion.Euler(0, 90, 0) * [0, 0, 1]
+normal_world = [1, 0, 0]  (now pointing +X in world)
+```
+
+**Verification:** 90° Y-rotation maps +Z → +X ✓
+
 ## Object Placement Mathematics
 
 ### Problem: Place lamp on table
@@ -251,7 +288,12 @@ lamp.normal_sls = R_ls_lamp * lamp.normal_local
    rotated_up = q1 * lamp.up_sls
    projection = rotated_up - (rotated_up · desired_normal_sls) * desired_normal_sls
    projection_norm = normalize(projection)
-   q2 = QuaternionFromTo(projection_norm, table.up_sls)
+
+   // Degenerate case check
+   if |projection| < 0.01:
+      q2 = [0, 0, 0, 1]  (identity, no twist correction needed)
+   else:
+      q2 = QuaternionFromTo(projection_norm, table.up_sls)
 
 3. Final SLS rotation:
    R_sls_final = q2 * q1
@@ -261,6 +303,8 @@ lamp.normal_sls = R_ls_lamp * lamp.normal_local
 - `q1` aligns the contact normals (bottom to top)
 - `q2` removes arbitrary twist around the normal axis
 - Combined: Fully constrained rotation
+
+**Degenerate case:** If `rotated_up` is nearly parallel to `desired_normal_sls`, the projection length approaches zero. This occurs when the object's up vector aligns with the contact normal (e.g., lamp lying on its side). In this case, skip twist correction to avoid gimbal-like jitter.
 
 ### Step 3: Convert Rotation to World
 
@@ -291,21 +335,35 @@ table.top_world = p_wl_table + R_ws_table * (S_table ⊙ table.top_sls)
 ```
 lamp.anchor_world = R_world_lamp * (S_lamp ⊙ lamp.bottom_local)
 ```
+- Apply scale: `S_lamp ⊙ lamp.bottom_local`
+- Rotate to world: `R_world_lamp * scaled_offset`
+- This gives the world-space offset from lamp's pivot to its contact point
 
 **C. Solve for lamp pivot:**
 ```
 p_world_lamp = table.top_world - lamp.anchor_world
 ```
 
+**Full expanded form:**
+```
+p_world_lamp = table.top_world - R_world_lamp * (S_lamp ⊙ lamp.bottom_local)
+```
+
 **Why subtract anchor?**
 ```
-Desired: anchor_world = table.top_world
-anchor_world = p_world_lamp + R_world_lamp * (S_lamp ⊙ lamp.bottom_local)
+Desired: Contact points coincide
+  lamp_contact_world = table.top_world
+
+Contact point is pivot + anchor offset:
+  lamp_contact_world = p_world_lamp + R_world_lamp * (S_lamp ⊙ lamp.bottom_local)
+  lamp_contact_world = p_world_lamp + anchor_world
 
 Solve for p_world_lamp:
-p_world_lamp = table.top_world - R_world_lamp * (S_lamp ⊙ lamp.bottom_local)
-p_world_lamp = table.top_world - anchor_world
+  p_world_lamp = lamp_contact_world - anchor_world
+  p_world_lamp = table.top_world - anchor_world
 ```
+
+**Note:** The subtraction accounts for the fact that the anchor is an offset FROM the pivot. To place the anchor at a target location, we must position the pivot such that pivot + offset = target.
 
 ## Common Pitfalls
 
