@@ -12,9 +12,18 @@ namespace ContextAwareSceneBuilder.Editor
     /// </summary>
     public class SemanticPointMarker : MonoBehaviour
     {
+        /// <summary>
+        /// Normal direction for this semantic point (zero = no normal).
+        /// Used for automatic rotation calculation during object placement.
+        /// Only directional points (front/back/left/right/top/bottom) have non-zero normals.
+        /// </summary>
+        [Tooltip("Normal direction for this semantic point. Leave zero for non-directional points.")]
+        public Vector3 normal = Vector3.zero;
+
 #if UNITY_EDITOR
         /// <summary>
         /// Draws yellow sphere gizmo and label in Scene view (always visible).
+        /// Optionally draws cyan arrow showing normal direction.
         /// </summary>
         void OnDrawGizmos()
         {
@@ -24,6 +33,13 @@ namespace ContextAwareSceneBuilder.Editor
 
             // Label with point name
             Handles.Label(transform.position, gameObject.name);
+
+            // Draw normal direction if non-zero
+            if (normal != Vector3.zero)
+            {
+                Gizmos.color = Color.cyan;
+                Gizmos.DrawRay(transform.position, normal.normalized * 0.2f);
+            }
         }
 #endif
     }

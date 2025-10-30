@@ -48,6 +48,14 @@ namespace ContextAwareSceneBuilder.Editor
         public UnityEngine.Vector3 scale;
 
         /// <summary>
+        /// Semantic Local Space rotation (local → SLS).
+        /// Rotation that aligns this prefab's semantic front to +Z and up to +Y.
+        /// Calculated from front and top semantic point normals.
+        /// Identity if front/top points missing.
+        /// </summary>
+        public UnityEngine.Quaternion semanticLocalSpaceRotation;
+
+        /// <summary>
         /// Semantic tags describing prefab purpose (e.g., "enemy", "furniture").
         /// Helps LLM understand prefab beyond name/category.
         /// Null if no SemanticTags component on prefab root.
@@ -63,7 +71,7 @@ namespace ContextAwareSceneBuilder.Editor
     }
 
     /// <summary>
-    /// Represents a named semantic point with local position offset.
+    /// Represents a named semantic point with local position offset and normal direction.
     /// </summary>
     [Serializable]
     public class SemanticPoint
@@ -77,5 +85,12 @@ namespace ContextAwareSceneBuilder.Editor
         /// Local position offset relative to prefab pivot.
         /// </summary>
         public UnityEngine.Vector3 offset;
+
+        /// <summary>
+        /// Normal direction in local space (truthful to mesh geometry).
+        /// Zero vector for non-directional points.
+        /// Used for automatic rotation calculation and two-vector alignment.
+        /// </summary>
+        public UnityEngine.Vector3 normal;
     }
 }
