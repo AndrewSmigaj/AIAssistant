@@ -87,6 +87,11 @@ namespace ContextAwareSceneBuilder.Editor
                 LoadPrefabList();
             }
 
+            if (GUILayout.Button("Initialize Semantic Points", EditorStyles.toolbarButton, GUILayout.Width(160)))
+            {
+                InitializeSemanticPointsForAll();
+            }
+
             EditorGUILayout.EndHorizontal();
             GUILayout.Space(5);
         }
@@ -247,6 +252,72 @@ namespace ContextAwareSceneBuilder.Editor
             }
 
             Repaint();
+        }
+
+        /// <summary>
+        /// Initializes SemanticPoints container and pivot point for all loaded prefabs.
+        /// Creates container if missing, adds pivot at [0,0,0] if missing.
+        /// Idempotent - safe to run multiple times.
+        /// </summary>
+        void InitializeSemanticPointsForAll()
+        {
+            if (_prefabs == null || _prefabs.Count == 0)
+            {
+                EditorUtility.DisplayDialog("No Prefabs", "Load prefabs first using Refresh Prefabs button", "OK");
+                return;
+            }
+
+            int containerCount = 0;
+            int pivotCount = 0;
+
+            foreach (var prefab in _prefabs)
+            {
+                GameObject prefabContents = PrefabUtility.LoadPrefabContents(prefab.prefabPath);
+                try
+                {
+                    bool modified = false;
+
+                    // Create container if missing
+                    Transform container = prefabContents.transform.Find("SemanticPoints");
+                    if (container == null)
+                    {
+                        GameObject containerObj = new GameObject("SemanticPoints");
+                        containerObj.transform.SetParent(prefabContents.transform, false);
+                        container = containerObj.transform;
+                        containerCount++;
+                        modified = true;
+                    }
+
+                    // Create pivot if missing
+                    Transform pivot = container.Find("pivot");
+                    if (pivot == null)
+                    {
+                        GameObject pivotObj = new GameObject("pivot");
+                        pivotObj.transform.SetParent(container, false);
+                        pivotObj.transform.localPosition = Vector3.zero;
+                        pivotObj.AddComponent<SemanticPointMarker>();
+                        pivotCount++;
+                        modified = true;
+                    }
+
+                    // Only save if we made changes
+                    if (modified)
+                    {
+                        PrefabUtility.SaveAsPrefabAsset(prefabContents, prefab.prefabPath);
+                    }
+                }
+                finally
+                {
+                    PrefabUtility.UnloadPrefabContents(prefabContents);
+                }
+            }
+
+            Debug.Log($"[Semantic Annotator] Initialized semantic points: {containerCount} containers created, {pivotCount} pivot points added");
+            EditorUtility.DisplayDialog("Complete",
+                $"Initialized semantic points for {_prefabs.Count} prefab(s):\n\n" +
+                $"• {containerCount} SemanticPoints containers created\n" +
+                $"• {pivotCount} pivot points added",
+                "OK");
         }
 
         /// <summary>

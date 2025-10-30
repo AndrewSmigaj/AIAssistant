@@ -1,0 +1,1108 @@
+# Architecture: Adding Normal Vectors to Semantic Points
+
+## Overview
+Add normal vector support to semantic points to enable LLM to automatically calculate
+correct object rotation when aligning surfaces (e.g., bed against wall, lamp on table).
+
+## Problem Statement
+Currently, o4 must guess rotation based on object names and spatial reasoning. This leads
+to errors like placing a bed facing into a wall instead of into the room. By providing
+surface normals, rotation calculation becomes deterministic.
+
+## Goals
+- Add normal field to SemanticPointMarker component
+- Set normals when creating directional points
+- Export normals in prefab catalog
+- Provide "Rotate Directions" button to adjust for mesh orientation
+- Update LLM algorithm to calculate rotation from normals using quaternions
+- Create semantic point reference documentation for different object categories
+
+## Limitations
+- **Directional points only**: Only the 6 directional points (front/back/left/right/top/bottom)
+  have normals. Manual points have zero normals.
+
+---
+
+## 1. Component Changes
+
+### File: SemanticPointMarker.cs
+**Location:** `Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/Components/SemanticPointMarker.cs`
+
+**Add field:**
+```csharp
+public class SemanticPointMarker : MonoBehaviour
+{
+    public Vector3 normal = Vector3.zero;  // Normal direction for this point (zero = no normal)
+
+    // Existing gizmo drawing code...
+}
+```
+
+**Notes:**
+- Default is `Vector3.zero` (no normal)
+- Only directional points will have non-zero normals
+- User can manually edit in inspector if needed
+
+---
+
+## 2. Data Model Changes
+
+### File: PrefabMetadata.cs
+**Location:** `Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/Models/PrefabMetadata.cs`
+
+**Add field to PrefabMetadata:**
+```csharp
+public class PrefabMetadata
+{
+    public string prefabName;
+    public string prefabPath;
+    public string prefabTag;
+    public string uniqueFunctionName;
+    public Vector3 scale;
+
+    // NEW: Semantic Local Space rotation (local → SLS)
+    public Quaternion semanticLocalSpaceRotation;  // R_ls
+
+    public ComponentMetadata[] components;
+    public string[] semanticTags;
+    public SemanticPoint[] semanticPoints;
+}
+
+public class SemanticPoint
+{
+    public string name;
+    public Vector3 offset;      // LOCAL offset from pivot (truthful)
+    public Vector3 normal;      // LOCAL normal direction (truthful, describes actual geometry)
+}
+```
+
+**Notes:**
+- `semanticLocalSpaceRotation` (R_ls) is the rotation that transforms the prefab from local space to Semantic Local Space (SLS)
+- SLS is a canonical frame where front=+Z, up=+Y, right=+X
+- R_ls is rotation-only (no translation) - SLS shares the same origin (pivot) as local space
+- Semantic points store truthful geometry data (offsets from pivot, actual normals)
+- R_ls is calculated once per prefab from front and top normals
+
+---
+
+## 3. Data Capture (Scanning)
+
+### File: PrefabScanner.cs
+**Location:** `Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/PrefabScanner.cs`
+**Method:** Semantic point extraction (~line 160)
+
+**Read normals and calculate R_ls:**
+```csharp
+// Step 1: Read all semantic points (truthful normals)
+List<SemanticPoint> points = new List<SemanticPoint>();
+foreach (Transform child in semanticPointsContainer)
+{
+    SemanticPointMarker marker = child.GetComponent<SemanticPointMarker>();
+    Vector3 normal = Vector3.zero;
+    if (marker != null)
+    {
+        normal = marker.normal;
+    }
+
+    points.Add(new SemanticPoint
+    {
+        name = child.name,
+        offset = child.localPosition,  // Offset from pivot (truthful)
+        normal = normal                  // Truthful normal
+    });
+}
+
+// Step 2: Calculate Semantic Local Space rotation (R_ls)
+Transform frontPoint = semanticPointsContainer.Find("front");
+Transform topPoint = semanticPointsContainer.Find("top");
+
+if (frontPoint != null && topPoint != null)
+{
+    SemanticPointMarker frontMarker = frontPoint.GetComponent<SemanticPointMarker>();
+    SemanticPointMarker topMarker = topPoint.GetComponent<SemanticPointMarker>();
+
+    if (frontMarker != null && topMarker != null)
+    {
+        Vector3 frontNormal = frontMarker.normal;
+        Vector3 upNormal = topMarker.normal;
+
+        // R_ls: rotation that aligns semantic front→+Z, up→+Y
+        Quaternion R_ls = Quaternion.LookRotation(frontNormal, upNormal);
+        metadata.semanticLocalSpaceRotation = R_ls;
+
+        Debug.Log($"[Prefab Scanner] Calculated SLS rotation for {prefabName}: " +
+                  $"front={frontNormal}, up={upNormal}, R_ls={R_ls}");
+    }
+    else
+    {
+        metadata.semanticLocalSpaceRotation = Quaternion.identity;
+        Debug.LogWarning($"[Prefab Scanner] Missing markers for {prefabName}, using identity R_ls");
+    }
+}
+else
+{
+    metadata.semanticLocalSpaceRotation = Quaternion.identity;
+    Debug.LogWarning($"[Prefab Scanner] Missing front/top points for {prefabName}, using identity R_ls");
+}
+
+metadata.semanticPoints = points.ToArray();
+```
+
+**Notes:**
+- R_ls is calculated from truthful front and top normals
+- If front or top missing, R_ls defaults to identity (prefab assumed to follow Unity conventions)
+- R_ls is rotation-only - transforms local space to canonical SLS (front=+Z, up=+Y)
+- Semantic points keep their truthful offsets and normals
+
+---
+
+## 4. Catalog Export
+
+### File: PrefabCatalogGenerator.cs
+**Location:** `Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/PrefabCatalogGenerator.cs`
+
+### A. Add R_ls Export (~line 51)
+
+**Export semanticLocalSpaceRotation as quaternion array after scale field:**
+```csharp
+// Prefab default scale for semantic point calculations
+sb.Append($"\"scale\":{FormatVector3(prefab.scale)},");
+
+// Semantic Local Space rotation (local → SLS)
+sb.Append($"\"semanticLocalSpaceRotation\":{FormatQuaternion(prefab.semanticLocalSpaceRotation)},");
+```
+
+**Add FormatQuaternion helper method:**
+```csharp
+/// <summary>
+/// Formats Quaternion as compact JSON array [x, y, z, w].
+/// Token-optimized: [x,y,z,w] instead of {"x":x,"y":y,"z":z,"w":w}
+/// </summary>
+private static string FormatQuaternion(Quaternion q)
+{
+    return $"[{CleanFloat(q.x)},{CleanFloat(q.y)},{CleanFloat(q.z)},{CleanFloat(q.w)}]";
+}
+```
+
+### B. Update Semantic Points Export (~line 75)
+
+**Change from 4-value to 7-value format to include normals:**
+
+**OLD FORMAT (current code):**
+```json
+["front", 0.0, 0.4, 1.0]
+```
+`[name, posX, posY, posZ]`
+
+**NEW FORMAT (with normals):**
+```json
+["front", 0.0, 0.4, 1.0, 0.0, 0.0, 1.0]
+```
+`[name, posX, posY, posZ, normX, normY, normZ]`
+
+**Implementation:**
+```csharp
+// Semantic points with LOCAL offsets for precise placement (optional)
+if (prefab.semanticPoints != null && prefab.semanticPoints.Length > 0)
+{
+    sb.Append("\"semanticPoints\":[");
+    for (int p = 0; p < prefab.semanticPoints.Length; p++)
+    {
+        var point = prefab.semanticPoints[p];
+        // Compact tuple format: ["name", x, y, z, nx, ny, nz]
+        sb.Append($"[\"{EscapeJson(point.name)}\",");
+        sb.Append($"{CleanFloat(point.offset.x)},");
+        sb.Append($"{CleanFloat(point.offset.y)},");
+        sb.Append($"{CleanFloat(point.offset.z)},");
+        sb.Append($"{CleanFloat(point.normal.x)},");
+        sb.Append($"{CleanFloat(point.normal.y)},");
+        sb.Append($"{CleanFloat(point.normal.z)}]");
+        if (p < prefab.semanticPoints.Length - 1)
+            sb.Append(",");
+    }
+    sb.Append("],");
+}
+```
+
+---
+
+## 5. UI Tools (Semantic Annotator)
+
+### File: PrefabSemanticAnnotator.cs
+**Location:** `Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/PrefabSemanticAnnotator.cs`
+
+### A. Update "Create Directional Points" (~line 514)
+
+**Update CreatePoint helper to accept optional normal:**
+```csharp
+void CreatePoint(Transform container, string name, Vector3 position, Vector3 normal = default)
+{
+    GameObject pointObj = new GameObject(name);
+    pointObj.transform.SetParent(container, false);
+    pointObj.transform.localPosition = position;
+
+    SemanticPointMarker marker = pointObj.AddComponent<SemanticPointMarker>();
+    marker.normal = normal;  // Set the normal (will be zero if not provided)
+}
+```
+
+**Update CreateDirectionalPoints to set normals:**
+```csharp
+// In CreateDirectionalPoints():
+CreatePoint(container, "front", frontPos, new Vector3(0, 0, 1));
+CreatePoint(container, "back", backPos, new Vector3(0, 0, -1));
+CreatePoint(container, "right", rightPos, new Vector3(1, 0, 0));
+CreatePoint(container, "left", leftPos, new Vector3(-1, 0, 0));
+CreatePoint(container, "top", topPos, new Vector3(0, 1, 0));
+CreatePoint(container, "bottom", bottomPos, new Vector3(0, -1, 0));
+```
+
+**Resulting normals:**
+- front: `[0, 0, 1]` (forward +Z)
+- back: `[0, 0, -1]` (backward -Z)
+- right: `[1, 0, 0]` (right +X)
+- left: `[-1, 0, 0]` (left -X)
+- top: `[0, 1, 0]` (up +Y)
+- bottom: `[0, -1, 0]` (down -Y)
+
+### B. Add "Rotate Directions" Button
+
+**Location:** Right panel, near "Create Directional Points"
+
+**Purpose:** Adjust directional point naming if the mesh doesn't align with Unity's default forward direction. Each click rotates the semantic naming by 90° clockwise (can be clicked multiple times to cycle through orientations).
+
+**CRITICAL: Normals NEVER change!** Normals describe truthful geometry and stay constant. Only names get reassigned.
+
+**Example use case:** Car mesh points in +X direction instead of +Z. User clicks "Rotate Directions" once to rotate the semantic naming 90° clockwise.
+
+**Implementation:**
+```csharp
+void RotateDirectionalPoints()
+{
+    if (string.IsNullOrEmpty(_selectedPrefabPath)) return;
+
+    GameObject prefabContents = PrefabUtility.LoadPrefabContents(_selectedPrefabPath);
+    try
+    {
+        Transform container = prefabContents.transform.Find("SemanticPoints");
+        if (container == null)
+        {
+            EditorUtility.DisplayDialog("Error", "No SemanticPoints container found", "OK");
+            return;
+        }
+
+        // Get the 4 horizontal points by their current names
+        Transform oldFront = container.Find("front");
+        Transform oldBack = container.Find("back");
+        Transform oldRight = container.Find("right");
+        Transform oldLeft = container.Find("left");
+
+        if (oldFront == null || oldBack == null || oldRight == null || oldLeft == null)
+        {
+            EditorUtility.DisplayDialog("Error", "Not all horizontal directional points found", "OK");
+            return;
+        }
+
+        // Cycle names: front→left, right→front, back→right, left→back
+        // CRITICAL: Normals stay unchanged (truthful to geometry)
+        oldFront.name = "left";
+        oldRight.name = "front";
+        oldBack.name = "right";
+        oldLeft.name = "back";
+
+        PrefabUtility.SaveAsPrefabAsset(prefabContents, _selectedPrefabPath);
+        Debug.Log("[Semantic Annotator] Rotated directional point naming by 90° clockwise");
+        EditorUtility.DisplayDialog("Success", "Rotated directional point naming.\nClick again to continue cycling.", "OK");
+    }
+    finally
+    {
+        PrefabUtility.UnloadPrefabContents(prefabContents);
+    }
+}
+```
+
+**Notes:**
+- ONLY names change, normals stay truthful (describing actual mesh geometry)
+- Top and bottom unchanged (Y-axis semantics don't rotate around Y)
+- Positions stay at bounds faces (don't move)
+- Can click multiple times to cycle: 0° → 90° → 180° → 270° → 0°
+- After renaming, run prefab scanner to recalculate R_ls based on new semantic assignments
+
+### C. Manual Point Creation
+
+**Keep existing behavior:** Creates point with zero normal (no normal parameter passed)
+**User can:** Manually set `marker.normal` in inspector if needed
+
+---
+
+## 6. Semantic Local Space (SLS) Algorithm
+
+### Overview
+
+The SLS approach provides the LLM with a canonical coordinate frame for spatial reasoning:
+
+**Key Concepts:**
+- **Semantic Local Space (SLS)**: Rotation-only canonical frame where front=+Z, up=+Y, right=+X
+- **R_ls** (per prefab): Quaternion rotating from local space to SLS
+- **R_ws** (per instance): Quaternion rotating from SLS to world space
+- **p_wl** (per instance): World position of pivot
+- **Truthful storage**: All data stored truthfully (local for prefabs, world for instances)
+- **Canonical reasoning**: LLM receives everything in SLS for consistent spatial reasoning
+
+**Data Flow:**
+1. **Prefab Catalog**: LOCAL coordinates + R_ls → LLM transforms to SLS for reasoning
+2. **Scene Context**: Already transformed to SLS + R_ws/p_wl adapters (for reference only)
+3. **Tool Output**: LLM outputs R_world = R_sls_final * R_ls_new as quaternion [x,y,z,w]
+
+### A. Scene Context Transformation
+
+### File: ProjectIndexer.cs
+**Location:** `Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/ProjectIndexer.cs`
+**Method:** IndexScenes() (~line 133)
+
+**Replace semantic points export with SLS transformation:**
+
+```csharp
+// Extract semantic points and transform to SLS
+Transform semanticPointsContainer = go.transform.Find("SemanticPoints");
+if (semanticPointsContainer != null && semanticPointsContainer.childCount > 0)
+{
+    // Get prefab metadata to retrieve R_ls
+    GameObject prefabAsset = PrefabUtility.GetCorrespondingObjectFromSource(go);
+    Quaternion R_ls = Quaternion.identity;
+
+    if (prefabAsset != null)
+    {
+        string prefabPath = AssetDatabase.GetAssetPath(prefabAsset);
+        PrefabMetadata metadata = PrefabRegistryCache.GetByPath(prefabPath);
+        if (metadata != null)
+        {
+            R_ls = metadata.semanticLocalSpaceRotation;
+        }
+        else
+        {
+            Debug.LogWarning($"[AI Assistant] Could not find R_ls for {go.name}, using identity");
+        }
+    }
+
+    // Calculate R_ws: rotation from SLS to world
+    Quaternion R_wl = go.transform.rotation;  // Local to world rotation
+    Quaternion R_ws = R_wl * Quaternion.Inverse(R_ls);
+
+    // Export adapters for SLS→world conversion
+    sb.Append(",\"slsAdapters\":{");
+    sb.Append($"\"pivotWorld\":{FormatVector3Array(go.transform.position)},");
+    sb.Append($"\"rotationSLSToWorld\":{FormatQuaternionArray(R_ws)}");
+    sb.Append("}");
+
+    // Export semantic points in SLS coordinates
+    sb.Append(",\"semanticPoints\":[");
+    for (int p = 0; p < semanticPointsContainer.childCount; p++)
+    {
+        Transform child = semanticPointsContainer.GetChild(p);
+        SemanticPointMarker marker = child.GetComponent<SemanticPointMarker>();
+
+        // Get LOCAL offset and normal (truthful)
+        Vector3 localOffset = child.localPosition;
+        Vector3 localNormal = (marker != null) ? marker.normal : Vector3.zero;
+
+        // Transform to SLS
+        Vector3 offsetSLS = R_ls * localOffset;
+        Vector3 normalSLS = R_ls * localNormal;
+
+        // Export as 7-value tuple: [name, x, y, z, nx, ny, nz]
+        sb.Append($"[\"{EscapeJson(child.name)}\",");
+        sb.Append($"{CleanFloat(offsetSLS.x)},");
+        sb.Append($"{CleanFloat(offsetSLS.y)},");
+        sb.Append($"{CleanFloat(offsetSLS.z)},");
+        sb.Append($"{CleanFloat(normalSLS.x)},");
+        sb.Append($"{CleanFloat(normalSLS.y)},");
+        sb.Append($"{CleanFloat(normalSLS.z)}]");
+
+        if (p < semanticPointsContainer.childCount - 1)
+            sb.Append(",");
+    }
+    sb.Append("]");
+}
+```
+
+**Add helper method:**
+```csharp
+/// <summary>
+/// Formats Quaternion as compact JSON array [x, y, z, w].
+/// </summary>
+private static string FormatQuaternionArray(Quaternion q)
+{
+    return $"[{CleanFloat(q.x)},{CleanFloat(q.y)},{CleanFloat(q.z)},{CleanFloat(q.w)}]";
+}
+```
+
+### B. Algorithm Documentation for LLM
+
+### File: ContextBuilder.cs
+**Location:** `Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/ContextBuilder.cs`
+**Section:** System message (~line 45-260)
+
+**Add SLS explanation section after Key Concepts (~line 250):**
+
+```
+═══════════════════════════════════════════════════════════════════════
+## Semantic Local Space (SLS) Coordinate System
+═══════════════════════════════════════════════════════════════════════
+
+You reason in SEMANTIC LOCAL SPACE (SLS) - a canonical coordinate frame where:
+- Front = +Z axis
+- Up = +Y axis
+- Right = +X axis
+
+DATA YOU RECEIVE:
+
+1. Prefab Catalog:
+   - semanticPoints in LOCAL coordinates (truthful mesh space)
+   - semanticLocalSpaceRotation (R_ls): quaternion [x,y,z,w] that rotates LOCAL→SLS
+   - Example: ["top", 0.0, 2.383, 0.0, 0.0, 1.0, 0.0] (local Y=2.383)
+
+2. Scene Context:
+   - semanticPoints in SLS coordinates (already transformed for your reasoning)
+   - slsAdapters: {pivotWorld: [x,y,z], rotationSLSToWorld: [qx,qy,qz,qw]}
+   - Example: ["top", 0.0, 0.813, 0.0, 0.0, 1.0, 0.0] (SLS Y=0.813 after transformation)
+
+REASONING WORKFLOW:
+
+Step 1: Transform prefab data to SLS (if using catalog)
+   - Multiply semantic points by R_ls: point_sls = R_ls * point_local
+   - Multiply normals by R_ls: normal_sls = R_ls * normal_local
+
+Step 2: Reason in SLS (everything is now canonical)
+   - Calculate alignments, spacings, rotations in SLS
+   - Use two-vector alignment for rotation calculation (see below)
+   - Output: R_sls_final (alignment rotation in SLS)
+
+Step 3: Convert to world for NEW object instantiation
+   - Rotation: R_world_new = R_sls_final * R_ls_new
+     (R_ls_new from catalog, R_sls_final from alignment)
+
+   - Position: Calculate anchor point, then solve for pivot
+     1. Get target plane in world (from scene context SLS data):
+        planePoint_world = p_wl_target + R_ws_target * planePoint_sls_target
+        planeNormal_world = R_ws_target * planeNormal_sls_target
+        (Scene context provides SLS coordinates; use R_ws adapter to convert to world)
+
+     2. Calculate new object's anchor offset in world:
+        anchor_world = R_world_new * (scale_new ⊙ anchor_local)
+        (Apply scale to offset, rotate to world; NEVER scale normals)
+
+     3. Solve for pivot with clearance ε:
+        p_world_new = planePoint_world - ε * planeNormal_world - anchor_world
+
+   - Output quaternions [x,y,z,w] (NOT Euler angles)
+
+═══════════════════════════════════════════════════════════════════════
+## Coordinate Systems & Conversions (Canonical Rules)
+═══════════════════════════════════════════════════════════════════════
+
+Scene context stores UNSCALED SLS offsets (rotation-only; no scale baked in).
+Apply instance scale S only during SLS→world conversion.
+
+CONVERSION FORMULAS:
+
+1. Normals (unit directions):
+   normal_world = R_ws * normal_sls
+   (NO scale, NO translation)
+
+2. Offsets (from pivot):
+   offset_world = R_ws * (S ⊙ offset_sls)
+
+   To get world point at semantic location:
+   point_world = p_wl + offset_world
+
+   Combined: point_world = p_wl + R_ws * (S ⊙ offset_sls)
+
+CRITICAL RULES:
+   - Never scale normals (they are unit directions, not positions)
+   - Never double-scale (apply S once during final world conversion)
+   - Semantic points in scene context are offsets from instance pivot in SLS
+
+SANITY CHECK EXAMPLE:
+   Given: top_sls = [0, 2.383, 0], S = [0.341, 0.341, 0.341],
+          R_ws = [0,0,0,1] (identity), p_wl = [3.5, 0, 4.2]
+
+   offset_world = R_ws * (S ⊙ top_sls) = [0, 0.813, 0]
+   point_world = p_wl + offset_world = [3.5, 0.813, 4.2]
+   normal_world = R_ws * [0,1,0] = [0, 1, 0]
+
+═══════════════════════════════════════════════════════════════════════
+## Two-Vector Alignment Algorithm
+═══════════════════════════════════════════════════════════════════════
+
+When aligning an object to a surface/face, calculate rotation using two vectors:
+
+INPUTS:
+- target_normal_sls: Normal of target surface in SLS (from scene context)
+- target_up_sls: Up direction of target in SLS (typically [0,1,0])
+- object_normal_local: Normal of object's semantic point in LOCAL (from catalog)
+- object_up_local: Object's up direction in LOCAL (typically [0,1,0])
+
+STEP 1: Transform object vectors to SLS
+   object_normal_sls = R_ls_object * object_normal_local
+   object_up_sls = R_ls_object * object_up_local
+
+STEP 2: Calculate desired alignment in SLS
+   For surface placement, normals should OPPOSE:
+   desired_normal_sls = -target_normal_sls
+
+STEP 3: Two-vector alignment
+   A. Primary alignment (normal):
+      q1 = QuaternionFromTo(object_normal_sls, desired_normal_sls)
+
+   B. Apply q1 to object's up vector:
+      rotated_up = q1 * object_up_sls
+
+   C. Project to plane perpendicular to desired_normal:
+      projection = rotated_up - (rotated_up · desired_normal_sls) * desired_normal_sls
+      projection_normalized = normalize(projection)
+
+   D. Secondary alignment (twist around normal):
+      q2 = QuaternionFromTo(projection_normalized, target_up_sls)
+
+   E. Final rotation in SLS:
+      R_sls_final = q2 * q1
+
+STEP 4: Convert to world rotation for tool call
+   R_world_new = R_sls_final * R_ls_new
+   (R_ls_new from new object's catalog, NOT target's R_ws)
+   Output as quaternion [x,y,z,w]
+
+QUATERNION FROM-TO CALCULATION:
+
+QuaternionFromTo(from, to):
+   // Normalize inputs
+   from = normalize(from)
+   to = normalize(to)
+
+   // Check if vectors are parallel
+   dot_product = dot(from, to)
+
+   if dot_product > 0.9999:
+      // Already aligned
+      return [0, 0, 0, 1]
+
+   else if dot_product < -0.9999:
+      // Opposite directions - 180° rotation
+      // Find perpendicular axis
+      if abs(from.x) < 0.9:
+         axis = normalize(cross([1,0,0], from))
+      else:
+         axis = normalize(cross([0,1,0], from))
+      return [axis.x, axis.y, axis.z, 0]
+
+   else:
+      // Normal case
+      axis = cross(from, to)
+      w = sqrt((length(from)^2) * (length(to)^2)) + dot_product
+      q = [axis.x, axis.y, axis.z, w]
+      return normalize(q)
+
+EXAMPLE: Lamp on Table
+
+Prefab Catalog:
+  TableSquareMedium:
+    semanticPoints: [["top", 0.0, 2.383, 0.0, 0.0, 1.0, 0.0]] (local)
+    R_ls: [0, 0, 0, 1] (identity, already aligned)
+    scale: [0.341, 0.341, 0.341]
+
+  LampSmall:
+    semanticPoints: [["bottom", 0.005, 0.002, -0.008, 0.0, -1.0, 0.0]] (local)
+    R_ls: [0, 0, 0, 1] (identity)
+    scale: [1.0, 1.0, 1.0]
+
+Scene Context (table already placed):
+  table_instance:
+    position: [3.5, 0, 4.2]
+    rotation: [0, 0, 0, 1] (identity in world)
+    scale: [0.341, 0.341, 0.341]
+    semanticPoints: [["top", 0.0, 2.383, 0.0, 0.0, 1.0, 0.0]] (SLS, UNSCALED)
+    slsAdapters: {pivotWorld: [3.5, 0, 4.2], rotationSLSToWorld: [0,0,0,1]}
+
+Step 1: Transform lamp to SLS
+  lamp.bottom_sls = R_ls_lamp * lamp.bottom_local
+  lamp.bottom_sls = [0,0,0,1] * [0.005, 0.002, -0.008]
+  lamp.bottom_sls = [0.005, 0.002, -0.008]
+
+  lamp.bottom_normal_sls = R_ls_lamp * [0, -1, 0] = [0, -1, 0]
+
+Step 2: Check alignment in SLS
+  table.top normal in SLS: [0, 1, 0] (up)
+  lamp.bottom normal in SLS: [0, -1, 0] (down)
+  They already oppose ✓ No rotation needed: R_sls_final = [0, 0, 0, 1]
+
+Step 3: Calculate world rotation
+  R_world_lamp = R_sls_final * R_ls_lamp
+  R_world_lamp = [0,0,0,1] * [0,0,0,1] = [0,0,0,1] (identity)
+
+Step 4: Calculate world position
+  A. Get table.top in world (from scene context SLS data):
+     table.top_sls = [0.0, 2.383, 0.0] (unscaled SLS from scene context)
+     table.top_world = p_wl_table + R_ws_table * (scale_table ⊙ table.top_sls)
+     table.top_world = [3.5,0,4.2] + [0,0,0,1] * ([0.341,0.341,0.341] ⊙ [0,2.383,0])
+     table.top_world = [3.5,0,4.2] + [0,0.813,0] = [3.5, 0.813, 4.2]
+
+  B. Calculate lamp anchor in world (from catalog LOCAL data):
+     lamp.bottom_local = [0.005, 0.002, -0.008]
+     anchor_world = R_world_lamp * (scale_lamp ⊙ lamp.bottom_local)
+     anchor_world = [0,0,0,1] * ([1,1,1] ⊙ [0.005,0.002,-0.008])
+     anchor_world = [0.005, 0.002, -0.008]
+
+  C. Solve for lamp pivot (ε=0 for exact contact):
+     lamp_pivot_world = table.top_world - anchor_world
+     lamp_pivot_world = [3.5,0.813,4.2] - [0.005,0.002,-0.008]
+     lamp_pivot_world = [3.495, 0.811, 4.208]
+
+Output to tool:
+  position = [3.495, 0.811, 4.208]
+  rotation = [0, 0, 0, 1]
+  scale = [1.0, 1.0, 1.0]
+```
+
+---
+
+## 7. Tool Signature Changes
+
+### File: DynamicToolGenerator.cs
+**Location:** `Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/DynamicToolGenerator.cs`
+
+**Change rotation parameter from Euler angles to quaternion:**
+
+**OLD (Euler angles):**
+```json
+{
+  "name": "rotation",
+  "type": "object",
+  "description": "Rotation in degrees [x, y, z]",
+  "properties": {
+    "x": {"type": "number"},
+    "y": {"type": "number"},
+    "z": {"type": "number"}
+  }
+}
+```
+
+**NEW (Quaternion):**
+```json
+{
+  "name": "rotation",
+  "type": "object",
+  "description": "Rotation as quaternion [x, y, z, w]. Use two-vector alignment algorithm to calculate.",
+  "properties": {
+    "x": {"type": "number", "description": "Quaternion x component"},
+    "y": {"type": "number", "description": "Quaternion y component"},
+    "z": {"type": "number", "description": "Quaternion z component"},
+    "w": {"type": "number", "description": "Quaternion w component"}
+  },
+  "required": ["x", "y", "z", "w"]
+}
+```
+
+### File: PrefabInstantiator.cs
+**Location:** `Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/PrefabInstantiator.cs`
+
+**Update InstantiatePrefab to accept quaternion:**
+
+**OLD:**
+```csharp
+public static GameObject InstantiatePrefab(
+    string prefabPath,
+    Vector3 position,
+    Vector3 rotation,  // Euler angles
+    Vector3 scale,
+    Dictionary<string, object> parameters = null)
+{
+    // ...
+    instance.transform.rotation = Quaternion.Euler(rotation);
+    // ...
+}
+```
+
+**NEW:**
+```csharp
+public static GameObject InstantiatePrefab(
+    string prefabPath,
+    Vector3 position,
+    Quaternion rotation,  // Quaternion directly
+    Vector3 scale,
+    Dictionary<string, object> parameters = null)
+{
+    // ...
+    instance.transform.rotation = rotation;
+    // ...
+}
+```
+
+**Update BatchInstantiatePrefabs tool handler:**
+```csharp
+// Parse rotation as quaternion
+Quaternion rotation = Quaternion.identity;
+if (instanceObj.TryGetValue("rotation", out object rotObj) && rotObj is Dictionary<string, object> rotDict)
+{
+    float x = Convert.ToSingle(rotDict.GetValueOrDefault("x", 0f));
+    float y = Convert.ToSingle(rotDict.GetValueOrDefault("y", 0f));
+    float z = Convert.ToSingle(rotDict.GetValueOrDefault("z", 0f));
+    float w = Convert.ToSingle(rotDict.GetValueOrDefault("w", 1f));
+    rotation = new Quaternion(x, y, z, w);
+}
+```
+
+---
+
+## 8. Semantic Point Reference Documentation
+
+### Create New Prompt Library Files
+
+Create three reference files under `Assets/ContextAwareSceneBuilder/PromptLibrary/Reference/`:
+
+### A. semantic_furniture.txt
+
+```
+# Semantic Points Reference: Furniture
+
+This document describes standard semantic point meanings for furniture objects.
+
+## Beds
+
+**back**: Headboard surface (where pillows rest)
+- Normal points away from bed (into wall when placed)
+- Position at center of headboard
+- Example: [0.0, 0.4, 1.0, 0.0, 0.0, 1.0]
+
+**front**: Footboard surface
+- Normal points away from bed (toward foot of room)
+- Position at center of footboard
+
+**bottom**: Underside contact surface
+- Normal [0, -1, 0] (points down)
+- Position at base contact point
+
+**top**: Top surface (mattress level)
+- Normal [0, 1, 0] (points up)
+- Position at mattress height
+
+## Chairs
+
+**back**: Backrest surface
+- Normal points away from chair (where person's back touches)
+- Position at center of backrest
+
+**front**: Front of seat
+- Normal points forward (direction person faces)
+- Position at front edge of seat
+
+**bottom**: Base contact point
+- Normal [0, -1, 0]
+- Position where legs/base touch floor
+
+**left/right**: Side edges of seat
+
+## Tables
+
+**top**: Table surface
+- Normal [0, 1, 0] (points up)
+- Position at center of table surface
+- Used for placing objects ON table
+
+**bottom**: Underside
+- Normal [0, -1, 0]
+- Position at lowest point
+
+**front/back/left/right**: Edges at tabletop level
+- Normals point horizontally outward
+- Used for aligning chairs or other furniture
+
+## Shelves
+
+**top**: Top shelf surface
+- Normal [0, 1, 0]
+- Where objects sit
+
+**back**: Rear mounting surface
+- Normal points away from wall
+- Used when mounting shelf to wall
+
+**front**: Front edge/lip
+- Normal points outward into room
+- Position at front edge
+
+## Alignment Notes
+
+When placing furniture:
+- Use bottom → top for vertical stacking
+- Use back → front for against-wall placement
+- Normals should oppose (point away from each other) for proper contact
+```
+
+### B. semantic_props.txt
+
+```
+# Semantic Points Reference: Props & Objects
+
+This document describes standard semantic point meanings for props and small objects.
+
+## Books
+
+**back**: Spine (bound edge where pages attach)
+- Normal points outward from pages
+- Position at center of spine
+- When book on shelf spine-out: align book.right or book.left → shelf.top
+
+**front**: Front cover
+- Normal points forward when reading
+- Position at center of front cover
+
+**bottom**: Bottom edge when book stands upright
+- Normal [0, -1, 0]
+- Position at bottom edge
+- When book upright on shelf: align book.bottom → shelf.top
+
+**top**: Top edge when upright
+- Normal [0, 1, 0]
+
+**left/right**: Side edges
+- Normal points outward from pages
+- Used when book lies flat on side
+
+## Lamps
+
+**bottom**: Base contact surface
+- Normal [0, -1, 0]
+- Where lamp sits on table/floor
+- Align lamp.bottom → table.top
+
+**top**: Top of lamp (shade or bulb height)
+- Normal [0, 1, 0]
+- Used for clearance calculations
+
+## Decorative Objects (vases, sculptures, etc.)
+
+**bottom**: Contact surface
+- Normal [0, -1, 0]
+- Where object sits on surface
+- Align bottom → target.top
+
+**front**: Forward-facing side (if applicable)
+- Direction object "faces"
+- Used for orientation toward viewer
+
+## Alignment Notes
+
+Props typically use:
+- bottom → top alignment for placement on surfaces
+- Specific sides for orientation (book spine out, object facing forward)
+- Normals oppose for proper surface contact
+```
+
+### C. semantic_architecture.txt
+
+```
+# Semantic Points Reference: Walls, Floors, Doors
+
+This document describes standard semantic point meanings for architectural elements.
+
+## Walls
+
+**front**: Interior-facing surface (into room)
+- Normal points inward into the room space
+- Position at center of wall face
+- Used when placing furniture against wall
+- Example: North wall front faces south (into room)
+
+**back**: Exterior-facing surface (into wall volume/outside)
+- Normal points outward from room
+- Position at opposite face from front
+- Used for wall-to-wall connections or exterior objects
+
+**top**: Top edge of wall
+- Normal [0, 1, 0]
+- Position at wall top edge
+- Used for ceiling connections
+
+**bottom**: Floor contact edge
+- Normal [0, -1, 0]
+- Position at floor level
+- Used for floor-to-wall connections
+
+**left/right**: Side edges
+- Normal points horizontally perpendicular to wall plane
+- Used for corner connections between walls
+
+## Floors
+
+**top**: Walking surface
+- Normal [0, 1, 0] (points up)
+- Position at floor level
+- Used for placing furniture (align object.bottom → floor.top)
+
+**bottom**: Underside (if applicable)
+- Normal [0, -1, 0]
+- Used in multi-story buildings
+
+## Ceilings
+
+**bottom**: Visible ceiling surface
+- Normal [0, -1, 0] (points down into room)
+- Used for hanging lights or objects from ceiling
+
+**top**: Above-ceiling space
+- Normal [0, 1, 0]
+
+## Doors
+
+**front**: Face that opens toward (handle side view)
+- Normal points in opening direction
+- Position at door center
+
+**back**: Opposite face
+- Normal points opposite direction
+
+**left**: Hinge side
+- Normal points perpendicular to door
+
+**right**: Handle/latch side
+- Normal points perpendicular to door
+
+**top/bottom**: Top and bottom edges
+
+## Alignment Notes
+
+Architecture pieces:
+- Walls: furniture.back → wall.front (furniture faces into room)
+- Floors: object.bottom → floor.top (object sits on floor)
+- Walls use consistent front=interior, back=exterior convention
+- Normals oppose for proper contact
+```
+
+---
+
+## 9. Prompt Library Updates
+
+Update all examples to reflect the new normal vector system:
+
+**Changes needed:**
+1. Update semantic point format from 4 values to 7 values: `[name, x, y, z, nx, ny, nz]`
+2. Add Step 1.5 walkthrough showing quaternion rotation calculation
+3. Show how normals oppose for surface alignment
+4. Update verification to include normal alignment check
+
+**Files to update:**
+- `Core/lamp_on_scaled_table.txt` - Add normals, show vertical normal skip
+- `Core/bed_against_wall.txt` - Add normals, show Y-rotation calculation
+- `Core/wall_at_edge.txt` - Add normals to walls
+- `Walls/wall_consistency.txt` - Add normals to wall examples
+- `Beds/bed_in_corner.txt` - Add normals, show multi-wall alignment
+- `Furniture/book_on_shelf.txt` - Add normals, show Z-rotation for book on side
+
+---
+
+## 10. Implementation Order
+
+### Phase 1: Data Model & Storage (Sections 1-2)
+1. Add `normal` field to SemanticPointMarker component
+2. Update PrefabMetadata.cs to add:
+   - `Vector3 normal` to SemanticPoint class
+   - `Quaternion semanticLocalSpaceRotation` to PrefabMetadata class
+
+### Phase 2: Scanning & Export (Sections 3-4)
+3. Update PrefabScanner.cs to:
+   - Read `marker.normal` from semantic points
+   - Calculate R_ls using Quaternion.LookRotation(frontNormal, upNormal)
+   - Store R_ls in metadata
+4. Update PrefabCatalogGenerator.cs to:
+   - Export semanticLocalSpaceRotation as quaternion [x,y,z,w]
+   - Export semantic points with 7 values [name, x, y, z, nx, ny, nz]
+   - Add FormatQuaternion helper method
+5. Update ProjectIndexer.cs to:
+   - Transform semantic points from local to SLS using R_ls
+   - Calculate and export R_ws per instance
+   - Export slsAdapters {pivotWorld, rotationSLSToWorld}
+   - Add FormatQuaternionArray helper method
+
+### Phase 3: UI Tools (Section 5)
+6. Update CreatePoint helper to accept optional normal parameter
+7. Update CreateDirectionalPoints to set canonical normals
+8. Add "Rotate Directions" button (only rename, don't change normals)
+
+### Phase 4: Tool Signatures (Section 7)
+9. Update DynamicToolGenerator.cs rotation parameter to quaternion
+10. Update PrefabInstantiator.cs to accept quaternion rotation
+11. Update batch tool handler to parse quaternion
+
+### Phase 5: Algorithm Documentation (Section 6)
+12. Update ContextBuilder.cs system message with:
+    - SLS coordinate system explanation
+    - Two-vector alignment algorithm
+    - Quaternion math formulas
+    - Worked examples
+
+### Phase 6: Reference & Examples (Sections 8-9)
+13. Create three semantic point reference files in PromptLibrary/Reference/
+14. Update all existing prompt library examples to use SLS reasoning
+
+### Phase 7: Integration Testing
+15. Rescan prefabs manually: Open Unity → Semantic Annotator → Click "Refresh Prefabs"
+16. Test with simple placement (lamp on table)
+17. Test with complex alignment (bed against wall)
+18. Verify quaternion output from LLM
+
+---
+
+## 11. Testing Plan
+
+### Unit Tests
+
+1. **Normal storage and retrieval:**
+   - Create directional points, verify marker.normal is set
+   - Scan prefab, verify normal in metadata
+   - Export catalog, verify 7 values per point
+
+2. **Rotate Directions:**
+   - Create directional points
+   - Click button, verify normals rotated 90°
+   - Verify names rotated correctly
+   - Click 4 times, verify returns to original state
+
+3. **Vertical normal handling:**
+   - Test lamp.bottom [0,-1,0] → table.top [0,1,0]
+   - Verify Step 1.5 skips atan2 calculation
+   - Verify placement succeeds with default rotation
+
+### Integration Tests
+
+1. **Bed against wall:**
+   - Create bed and wall with directional points
+   - Ask o4: "Place bed against north wall"
+   - Verify: o4 uses Step 1.5
+   - Verify: Bed rotation calculated correctly (270°)
+   - Verify: Bed faces into room, not wall
+
+2. **Book orientations:**
+   - Create book and shelf
+   - Test: "Place book upright on shelf" (book.bottom → shelf.top)
+   - Test: "Place book flat, spine out" (book.right → shelf.top)
+   - Verify: Correct rotation for each orientation
+
+3. **Mesh rotation adjustment:**
+   - Create car prefab (forward = +X)
+   - Click "Rotate Directions" once
+   - Verify: Front is now mapped to X-axis correctly
+   - Test placement with o4
+
+---
+
+## Success Criteria
+
+- ✅ Directional points have correct normals
+- ✅ Catalog exports normals correctly (7 values)
+- ✅ o4 calculates rotation using Step 1.5
+- ✅ Bed places against wall facing INTO room
+- ✅ "Rotate Directions" adjusts for mesh orientation
+- ✅ Vertical normals handled correctly (no atan2 error)
+- ✅ Reference documentation helps o4 understand semantic point meanings
+- ✅ Multiple object orientations work (book upright vs flat)

@@ -152,7 +152,7 @@ namespace ContextAwareSceneBuilder.Editor
                     Debug.Log($"[AI Assistant] Found {semanticTags.Length} semantic tag(s) on {prefabAsset.name}");
                 }
 
-                // Extract semantic points
+                // Extract semantic points and ensure pivot point exists
                 SemanticPoint[] semanticPoints = null;
                 Transform semanticPointsContainer = tempInstance.transform.Find("SemanticPoints");
                 if (semanticPointsContainer != null)
