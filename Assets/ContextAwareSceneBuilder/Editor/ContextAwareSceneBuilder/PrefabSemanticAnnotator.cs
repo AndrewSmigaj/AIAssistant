@@ -232,6 +232,11 @@ namespace ContextAwareSceneBuilder.Editor
             {
                 CreateDirectionalPoints();
             }
+
+            if (GUILayout.Button("Rotate Directions"))
+            {
+                RotateDirectionalPoints();
+            }
         }
 
         /// <summary>
@@ -546,6 +551,24 @@ namespace ContextAwareSceneBuilder.Editor
                 Vector3 centerOffset = bounds.center - prefabContents.transform.position;
                 Vector3 size = bounds.size;
 
+                // Unscale the size to get local space dimensions
+                Vector3 scale = prefabContents.transform.localScale;
+                Vector3 unscaledSize = new Vector3(
+                    scale.x != 0 ? size.x / scale.x : size.x,
+                    scale.y != 0 ? size.y / scale.y : size.y,
+                    scale.z != 0 ? size.z / scale.z : size.z
+                );
+
+                // Debug logging to diagnose position calculation
+                Debug.Log($"[CreateDirections] Prefab: {prefabContents.name}");
+                Debug.Log($"[CreateDirections] prefabContents.transform.position: {prefabContents.transform.position}");
+                Debug.Log($"[CreateDirections] prefabContents.transform.localScale: {scale}");
+                Debug.Log($"[CreateDirections] bounds.center: {bounds.center}");
+                Debug.Log($"[CreateDirections] bounds.size (world): {bounds.size}");
+                Debug.Log($"[CreateDirections] unscaledSize (local): {unscaledSize}");
+                Debug.Log($"[CreateDirections] centerOffset: {centerOffset}");
+                Debug.Log($"[CreateDirections] Calculated front position: {centerOffset + Vector3.forward * (unscaledSize.z / 2)}");
+
                 // Ensure SemanticPoints container exists
                 Transform container = prefabContents.transform.Find("SemanticPoints");
                 if (container == null)
@@ -566,13 +589,13 @@ namespace ContextAwareSceneBuilder.Editor
                     }
                 }
 
-                // Create directional points
-                CreatePoint(container, "front", centerOffset + Vector3.forward * (size.z / 2));
-                CreatePoint(container, "back", centerOffset + Vector3.back * (size.z / 2));
-                CreatePoint(container, "left", centerOffset + Vector3.left * (size.x / 2));
-                CreatePoint(container, "right", centerOffset + Vector3.right * (size.x / 2));
-                CreatePoint(container, "top", centerOffset + Vector3.up * (size.y / 2));
-                CreatePoint(container, "bottom", centerOffset + Vector3.down * (size.y / 2));
+                // Create directional points with canonical normals (using unscaled size)
+                CreatePoint(container, "front", centerOffset + Vector3.forward * (unscaledSize.z / 2), Vector3.forward);
+                CreatePoint(container, "back", centerOffset + Vector3.back * (unscaledSize.z / 2), Vector3.back);
+                CreatePoint(container, "left", centerOffset + Vector3.left * (unscaledSize.x / 2), Vector3.left);
+                CreatePoint(container, "right", centerOffset + Vector3.right * (unscaledSize.x / 2), Vector3.right);
+                CreatePoint(container, "top", centerOffset + Vector3.up * (unscaledSize.y / 2), Vector3.up);
+                CreatePoint(container, "bottom", centerOffset + Vector3.down * (unscaledSize.y / 2), Vector3.down);
 
                 PrefabUtility.SaveAsPrefabAsset(prefabContents, _selectedPrefabPath);
                 Debug.Log($"[Semantic Annotator] Created 6 directional points");
@@ -588,14 +611,79 @@ namespace ContextAwareSceneBuilder.Editor
         }
 
         /// <summary>
+        /// Rotates directional point naming by 90° clockwise around Y-axis.
+        /// CRITICAL: Normals NEVER change (they describe truthful geometry).
+        /// Only names get reassigned.
+        /// </summary>
+        void RotateDirectionalPoints()
+        {
+            if (string.IsNullOrEmpty(_selectedPrefabPath))
+            {
+                Debug.LogWarning("[Semantic Annotator] No prefab selected");
+                return;
+            }
+
+            GameObject prefabContents = PrefabUtility.LoadPrefabContents(_selectedPrefabPath);
+            try
+            {
+                Transform container = prefabContents.transform.Find("SemanticPoints");
+                if (container == null)
+                {
+                    EditorUtility.DisplayDialog("Error", "No SemanticPoints container found. Create directional points first.", "OK");
+                    return;
+                }
+
+                // Get the 4 horizontal points by their current names
+                Transform oldFront = container.Find("front");
+                Transform oldBack = container.Find("back");
+                Transform oldRight = container.Find("right");
+                Transform oldLeft = container.Find("left");
+
+                if (oldFront == null || oldBack == null || oldRight == null || oldLeft == null)
+                {
+                    EditorUtility.DisplayDialog("Error", "Not all horizontal directional points found. Create directional points first.", "OK");
+                    return;
+                }
+
+                // Cycle names: front→left, right→front, back→right, left→back
+                // CRITICAL: Normals stay unchanged (truthful to geometry)
+                oldFront.name = "left";
+                oldRight.name = "front";
+                oldBack.name = "right";
+                oldLeft.name = "back";
+
+                PrefabUtility.SaveAsPrefabAsset(prefabContents, _selectedPrefabPath);
+                Debug.Log("[Semantic Annotator] Rotated directional point naming by 90° clockwise");
+
+                EditorUtility.DisplayDialog("Success",
+                    "Rotated directional point naming by 90° clockwise.\n\n" +
+                    "• front → left\n" +
+                    "• right → front\n" +
+                    "• back → right\n" +
+                    "• left → back\n\n" +
+                    "Normals remain unchanged (truthful to geometry).\n" +
+                    "Click 'Refresh Prefabs' to recalculate R_ls.",
+                    "OK");
+            }
+            finally
+            {
+                PrefabUtility.UnloadPrefabContents(prefabContents);
+            }
+
+            Repaint();
+        }
+
+        /// <summary>
         /// Helper to create a semantic point child GameObject.
         /// </summary>
-        void CreatePoint(Transform parent, string name, Vector3 localPos)
+        void CreatePoint(Transform parent, string name, Vector3 localPos, Vector3 normal = default)
         {
             GameObject pointObj = new GameObject(name);
             pointObj.transform.SetParent(parent, false);
             pointObj.transform.localPosition = localPos;
-            pointObj.AddComponent<SemanticPointMarker>();
+
+            SemanticPointMarker marker = pointObj.AddComponent<SemanticPointMarker>();
+            marker.normal = normal;
         }
 
         /// <summary>

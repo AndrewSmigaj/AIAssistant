@@ -4,7 +4,7 @@ using UnityEngine;
 using UnityEditor;
 #endif
 
-namespace ContextAwareSceneBuilder.Editor
+namespace ContextAwareSceneBuilder
 {
     /// <summary>
     /// Marks individual semantic points with gizmo visualization in Scene view.

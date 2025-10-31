@@ -130,16 +130,67 @@ namespace ContextAwareSceneBuilder.Editor
                             sb.Append($"\"scale\":{FormatVector3Array(go.transform.localScale)},");
                             sb.Append($"\"childCount\":{go.transform.childCount}");
 
-                            // Extract semantic points with world positions (if present)
+                            // Extract semantic points (transform to UNSCALED SLS)
                             Transform semanticPointsContainer = go.transform.Find("SemanticPoints");
                             if (semanticPointsContainer != null && semanticPointsContainer.childCount > 0)
                             {
+                                // Get prefab source and load R_ls from registry
+                                GameObject prefabRoot = PrefabUtility.GetCorrespondingObjectFromSource(go);
+                                string prefabPath = prefabRoot != null ? AssetDatabase.GetAssetPath(prefabRoot) : null;
+                                Quaternion R_ls = Quaternion.identity;
+
+                                if (!string.IsNullOrEmpty(prefabPath))
+                                {
+                                    string registryPath = Path.Combine(PROJECT_ARTIFACTS, "PrefabRegistry.json");
+                                    if (File.Exists(registryPath))
+                                    {
+                                        string registryJson = File.ReadAllText(registryPath);
+                                        PrefabRegistry registry = JsonUtility.FromJson<PrefabRegistry>(registryJson);
+                                        PrefabMetadata metadata = System.Array.Find(registry.prefabs, p => p.prefabPath == prefabPath);
+                                        if (metadata != null)
+                                        {
+                                            R_ls = metadata.semanticLocalSpaceRotation;
+                                        }
+                                    }
+                                }
+
+                                // Calculate R_ws (SLS → World): R_ws = R_wl * R_ls⁻¹
+                                Quaternion R_wl = go.transform.rotation;
+                                Quaternion R_ws = R_wl * Quaternion.Inverse(R_ls);
+                                Vector3 p_wl = go.transform.position;
+                                Vector3 S = go.transform.localScale;
+
+                                // Export slsAdapters
+                                sb.Append(",\"slsAdapters\":{");
+                                sb.Append($"\"pivotWorld\":{FormatVector3Array(p_wl)},");
+                                sb.Append($"\"rotationSLSToWorld\":{FormatQuaternionArray(R_ws)}");
+                                sb.Append("}");
+
+                                // Transform semantic points to UNSCALED SLS
                                 sb.Append(",\"semanticPoints\":[");
                                 for (int p = 0; p < semanticPointsContainer.childCount; p++)
                                 {
                                     Transform child = semanticPointsContainer.GetChild(p);
-                                    Vector3 worldPos = child.position;
-                                    sb.Append($"[\"{EscapeJson(child.name)}\",{CleanFloat(worldPos.x)},{CleanFloat(worldPos.y)},{CleanFloat(worldPos.z)}]");
+
+                                    // Get normal from marker (in LOCAL space, not transformed by instance)
+                                    SemanticPointMarker marker = child.GetComponent<SemanticPointMarker>();
+                                    Vector3 normal_local = marker != null ? marker.normal : Vector3.zero;
+
+                                    // Transform offset: world → local (scaled) → local (unscaled) → SLS
+                                    Vector3 offset_world = child.position - p_wl;
+                                    Vector3 offset_local_scaled = Quaternion.Inverse(R_wl) * offset_world;
+                                    Vector3 offset_local = new Vector3(
+                                        S.x != 0 ? offset_local_scaled.x / S.x : 0,
+                                        S.y != 0 ? offset_local_scaled.y / S.y : 0,
+                                        S.z != 0 ? offset_local_scaled.z / S.z : 0
+                                    );
+                                    Vector3 offset_sls = R_ls * offset_local;
+
+                                    // Transform normal: local → SLS (rotation only, no scale)
+                                    Vector3 normal_sls = R_ls * normal_local;
+
+                                    // Export 7-value tuple [name, offset_x, offset_y, offset_z, normal_x, normal_y, normal_z]
+                                    sb.Append($"[\"{EscapeJson(child.name)}\",{CleanFloat(offset_sls.x)},{CleanFloat(offset_sls.y)},{CleanFloat(offset_sls.z)},{CleanFloat(normal_sls.x)},{CleanFloat(normal_sls.y)},{CleanFloat(normal_sls.z)}]");
                                     if (p < semanticPointsContainer.childCount - 1)
                                         sb.Append(",");
                                 }
@@ -355,6 +406,14 @@ namespace ContextAwareSceneBuilder.Editor
             if (Math.Abs(f) < 0.0001f)
                 return "0.0";
             return f.ToString("F3");
+        }
+
+        /// <summary>
+        /// Formats Quaternion as compact JSON array [x, y, z, w].
+        /// </summary>
+        private static string FormatQuaternionArray(Quaternion q)
+        {
+            return $"[{CleanFloat(q.x)},{CleanFloat(q.y)},{CleanFloat(q.z)},{CleanFloat(q.w)}]";
         }
 
         /// <summary>

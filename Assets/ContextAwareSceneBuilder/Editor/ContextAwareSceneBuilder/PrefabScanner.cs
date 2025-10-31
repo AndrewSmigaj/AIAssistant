@@ -160,14 +160,31 @@ namespace ContextAwareSceneBuilder.Editor
                     List<SemanticPoint> points = new List<SemanticPoint>();
                     foreach (Transform child in semanticPointsContainer)
                     {
+                        SemanticPointMarker marker = child.GetComponent<SemanticPointMarker>();
                         points.Add(new SemanticPoint
                         {
                             name = child.name,
-                            offset = child.localPosition
+                            offset = child.localPosition,
+                            normal = marker != null ? marker.normal : Vector3.zero
                         });
                     }
                     semanticPoints = points.ToArray();
                     Debug.Log($"[AI Assistant] Found {semanticPoints.Length} semantic point(s) on {prefabAsset.name}");
+                }
+
+                // Calculate R_ls from front/top normals (if present)
+                Quaternion R_ls = Quaternion.identity;
+                if (semanticPoints != null && semanticPoints.Length > 0)
+                {
+                    SemanticPoint front = Array.Find(semanticPoints, p => p.name == "front");
+                    SemanticPoint top = Array.Find(semanticPoints, p => p.name == "top");
+
+                    if (front != null && top != null &&
+                        front.normal != Vector3.zero && top.normal != Vector3.zero)
+                    {
+                        R_ls = Quaternion.LookRotation(front.normal, top.normal);
+                        Debug.Log($"[AI Assistant] Calculated R_ls for {prefabAsset.name}");
+                    }
                 }
 
                 // Generate unique function name
@@ -181,6 +198,7 @@ namespace ContextAwareSceneBuilder.Editor
                     prefabTag = category,
                     uniqueFunctionName = uniqueName,
                     scale = prefabScale,
+                    semanticLocalSpaceRotation = R_ls,
                     components = componentMetas.ToArray(),
                     semanticTags = semanticTags,
                     semanticPoints = semanticPoints

@@ -50,6 +50,9 @@ namespace ContextAwareSceneBuilder.Editor
                 // Prefab default scale for semantic point calculations
                 sb.Append($"\"scale\":{FormatVector3(prefab.scale)},");
 
+                // Semantic Local Space rotation (local → SLS)
+                sb.Append($"\"semanticLocalSpaceRotation\":{FormatQuaternion(prefab.semanticLocalSpaceRotation)},");
+
                 // Semantic tags for LLM understanding (optional)
                 if (prefab.semanticTags != null && prefab.semanticTags.Length > 0)
                 {
@@ -70,8 +73,8 @@ namespace ContextAwareSceneBuilder.Editor
                     for (int p = 0; p < prefab.semanticPoints.Length; p++)
                     {
                         var point = prefab.semanticPoints[p];
-                        // Compact tuple format: ["name", x, y, z]
-                        sb.Append($"[\"{EscapeJson(point.name)}\",{CleanFloat(point.offset.x)},{CleanFloat(point.offset.y)},{CleanFloat(point.offset.z)}]");
+                        // Compact tuple format: ["name", x, y, z, nx, ny, nz]
+                        sb.Append($"[\"{EscapeJson(point.name)}\",{CleanFloat(point.offset.x)},{CleanFloat(point.offset.y)},{CleanFloat(point.offset.z)},{CleanFloat(point.normal.x)},{CleanFloat(point.normal.y)},{CleanFloat(point.normal.z)}]");
                         if (p < prefab.semanticPoints.Length - 1)
                             sb.Append(",");
                     }
@@ -203,6 +206,14 @@ namespace ContextAwareSceneBuilder.Editor
 
             // Format with 3 decimal places for good precision
             return f.ToString("F3");
+        }
+
+        /// <summary>
+        /// Formats Quaternion as compact JSON array [x, y, z, w].
+        /// </summary>
+        private static string FormatQuaternion(Quaternion q)
+        {
+            return $"[{CleanFloat(q.x)},{CleanFloat(q.y)},{CleanFloat(q.z)},{CleanFloat(q.w)}]";
         }
 
         /// <summary>
