@@ -1,6 +1,6 @@
 # Context-Aware Scene Builder
 
-![Scene Builder Demo](1.png)
+![Scene Builder Demo](pic.png)
 
 A Unity Editor plugin for building scenes with natural language using OpenAI's o4-mini.
 
