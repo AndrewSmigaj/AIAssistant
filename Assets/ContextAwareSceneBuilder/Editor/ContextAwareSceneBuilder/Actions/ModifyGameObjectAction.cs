@@ -22,7 +22,7 @@ namespace ContextAwareSceneBuilder.Editor
         // Transform modifications (all optional)
         public string name;               // Rename
         public Vector3? position;         // Move
-        public Vector3? rotation;         // Rotate (Euler angles)
+        public Quaternion? rotation;      // Rotate (quaternion)
         public Vector3? scale;            // Scale
         public bool? active;              // Enable/disable
 

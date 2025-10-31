@@ -1,0 +1,74 @@
+# Semantic Points Reference: Furniture
+
+This document describes standard semantic point meanings for furniture objects.
+
+## Beds
+
+**back**: Headboard surface (where pillows rest)
+- Normal points away from bed (into wall when placed)
+- Position at center of headboard
+- Example: [0.0, 0.4, 1.0, 0.0, 0.0, 1.0]
+
+**front**: Footboard surface
+- Normal points away from bed (toward foot of room)
+- Position at center of footboard
+
+**bottom**: Underside contact surface
+- Normal [0, -1, 0] (points down)
+- Position at base contact point
+
+**top**: Top surface (mattress level)
+- Normal [0, 1, 0] (points up)
+- Position at mattress height
+
+## Chairs
+
+**back**: Backrest surface
+- Normal points away from chair (where person's back touches)
+- Position at center of backrest
+
+**front**: Front of seat
+- Normal points forward (direction person faces)
+- Position at front edge of seat
+
+**bottom**: Base contact point
+- Normal [0, -1, 0]
+- Position where legs/base touch floor
+
+**left/right**: Side edges of seat
+
+## Tables
+
+**top**: Table surface
+- Normal [0, 1, 0] (points up)
+- Position at center of table surface
+- Used for placing objects ON table
+
+**bottom**: Underside
+- Normal [0, -1, 0]
+- Position at lowest point
+
+**front/back/left/right**: Edges at tabletop level
+- Normals point horizontally outward
+- Used for aligning chairs or other furniture
+
+## Shelves
+
+**top**: Top shelf surface
+- Normal [0, 1, 0]
+- Where objects sit
+
+**back**: Rear mounting surface
+- Normal points away from wall
+- Used when mounting shelf to wall
+
+**front**: Front edge/lip
+- Normal points outward into room
+- Position at front edge
+
+## Alignment Notes
+
+When placing furniture:
+- Use bottom → top for vertical stacking
+- Use back → front for against-wall placement
+- Normals should oppose (point away from each other) for proper contact

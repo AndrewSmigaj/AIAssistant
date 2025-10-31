@@ -96,13 +96,14 @@ namespace ContextAwareSceneBuilder.Editor
               },
               ""rotation"": {
                 ""type"": ""object"",
-                ""description"": ""Euler angles in degrees. Optional, defaults to (0,0,0)"",
+                ""description"": ""Rotation as quaternion [x, y, z, w]. Use two-vector alignment algorithm to calculate. Optional, defaults to identity (0,0,0,1)"",
                 ""properties"": {
-                  ""x"": {""type"": ""number"", ""default"": 0},
-                  ""y"": {""type"": ""number"", ""default"": 0},
-                  ""z"": {""type"": ""number"", ""default"": 0}
+                  ""x"": {""type"": ""number"", ""description"": ""Quaternion x component"", ""default"": 0},
+                  ""y"": {""type"": ""number"", ""description"": ""Quaternion y component"", ""default"": 0},
+                  ""z"": {""type"": ""number"", ""description"": ""Quaternion z component"", ""default"": 0},
+                  ""w"": {""type"": ""number"", ""description"": ""Quaternion w component"", ""default"": 1}
                 },
-                ""required"": [""x"", ""y"", ""z""]
+                ""required"": [""x"", ""y"", ""z"", ""w""]
               },
               ""scale"": {
                 ""type"": ""object"",
@@ -144,7 +145,7 @@ namespace ContextAwareSceneBuilder.Editor
         ""instanceId"": {""type"": ""number"", ""description"": ""GameObject instance ID from scene context or creation output""},
         ""name"": {""type"": ""string"", ""description"": ""New name (optional)""},
         ""position"": {""type"": ""object"", ""properties"": {""x"": {""type"": ""number""}, ""y"": {""type"": ""number""}, ""z"": {""type"": ""number""}}, ""description"": ""New position (optional)""},
-        ""rotation"": {""type"": ""object"", ""properties"": {""x"": {""type"": ""number""}, ""y"": {""type"": ""number""}, ""z"": {""type"": ""number""}}, ""description"": ""New rotation in Euler degrees (optional)""},
+        ""rotation"": {""type"": ""object"", ""properties"": {""x"": {""type"": ""number""}, ""y"": {""type"": ""number""}, ""z"": {""type"": ""number""}, ""w"": {""type"": ""number""}}, ""description"": ""New rotation as quaternion [x, y, z, w] (optional)""},
         ""scale"": {""type"": ""object"", ""properties"": {""x"": {""type"": ""number""}, ""y"": {""type"": ""number""}, ""z"": {""type"": ""number""}}, ""description"": ""New scale (optional)""},
         ""active"": {""type"": ""boolean"", ""description"": ""Set active state (optional)""},
         ""parameters"": {""type"": ""object"", ""description"": ""Component field modifications (optional). Use 'ComponentType_fieldName' as keys, e.g., {'Rigidbody_mass': 10, 'MeshRenderer_enabled': true}""}

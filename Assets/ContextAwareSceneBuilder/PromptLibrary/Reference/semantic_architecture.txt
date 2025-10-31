@@ -1,0 +1,75 @@
+# Semantic Points Reference: Walls, Floors, Doors
+
+This document describes standard semantic point meanings for architectural elements.
+
+## Walls
+
+**front**: Interior-facing surface (into room)
+- Normal points inward into the room space
+- Position at center of wall face
+- Used when placing furniture against wall
+- Example: North wall front faces south (into room)
+
+**back**: Exterior-facing surface (into wall volume/outside)
+- Normal points outward from room
+- Position at opposite face from front
+- Used for wall-to-wall connections or exterior objects
+
+**top**: Top edge of wall
+- Normal [0, 1, 0]
+- Position at wall top edge
+- Used for ceiling connections
+
+**bottom**: Floor contact edge
+- Normal [0, -1, 0]
+- Position at floor level
+- Used for floor-to-wall connections
+
+**left/right**: Side edges
+- Normal points horizontally perpendicular to wall plane
+- Used for corner connections between walls
+
+## Floors
+
+**top**: Walking surface
+- Normal [0, 1, 0] (points up)
+- Position at floor level
+- Used for placing furniture (align object.bottom → floor.top)
+
+**bottom**: Underside (if applicable)
+- Normal [0, -1, 0]
+- Used in multi-story buildings
+
+## Ceilings
+
+**bottom**: Visible ceiling surface
+- Normal [0, -1, 0] (points down into room)
+- Used for hanging lights or objects from ceiling
+
+**top**: Above-ceiling space
+- Normal [0, 1, 0]
+
+## Doors
+
+**front**: Face that opens toward (handle side view)
+- Normal points in opening direction
+- Position at door center
+
+**back**: Opposite face
+- Normal points opposite direction
+
+**left**: Hinge side
+- Normal points perpendicular to door
+
+**right**: Handle/latch side
+- Normal points perpendicular to door
+
+**top/bottom**: Top and bottom edges
+
+## Alignment Notes
+
+Architecture pieces:
+- Walls: furniture.back → wall.front (furniture faces into room)
+- Floors: object.bottom → floor.top (object sits on floor)
+- Walls use consistent front=interior, back=exterior convention
+- Normals oppose for proper contact

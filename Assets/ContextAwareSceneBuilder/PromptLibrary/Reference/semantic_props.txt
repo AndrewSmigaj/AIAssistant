@@ -1,0 +1,55 @@
+# Semantic Points Reference: Props & Objects
+
+This document describes standard semantic point meanings for props and small objects.
+
+## Books
+
+**back**: Spine (bound edge where pages attach)
+- Normal points outward from pages
+- Position at center of spine
+- When book on shelf spine-out: align book.right or book.left → shelf.top
+
+**front**: Front cover
+- Normal points forward when reading
+- Position at center of front cover
+
+**bottom**: Bottom edge when book stands upright
+- Normal [0, -1, 0]
+- Position at bottom edge
+- When book upright on shelf: align book.bottom → shelf.top
+
+**top**: Top edge when upright
+- Normal [0, 1, 0]
+
+**left/right**: Side edges
+- Normal points outward from pages
+- Used when book lies flat on side
+
+## Lamps
+
+**bottom**: Base contact surface
+- Normal [0, -1, 0]
+- Where lamp sits on table/floor
+- Align lamp.bottom → table.top
+
+**top**: Top of lamp (shade or bulb height)
+- Normal [0, 1, 0]
+- Used for clearance calculations
+
+## Decorative Objects (vases, sculptures, etc.)
+
+**bottom**: Contact surface
+- Normal [0, -1, 0]
+- Where object sits on surface
+- Align bottom → target.top
+
+**front**: Forward-facing side (if applicable)
+- Direction object "faces"
+- Used for orientation toward viewer
+
+## Alignment Notes
+
+Props typically use:
+- bottom → top alignment for placement on surfaces
+- Specific sides for orientation (book spine out, object facing forward)
+- Normals oppose for proper surface contact

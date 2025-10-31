@@ -142,7 +142,7 @@ namespace ContextAwareSceneBuilder.Editor
                     ? $"scale ({action.scale.Value.x}, {action.scale.Value.y}, {action.scale.Value.z})"
                     : "scale (prefab default)";
                 Debug.Log($"[Preview] Would instantiate prefab '{prefabName}' named '{action.name}' at position ({action.position.x}, {action.position.y}, {action.position.z}), " +
-                         $"rotation ({action.rotation.x}, {action.rotation.y}, {action.rotation.z}), " +
+                         $"rotation ({action.rotation.x}, {action.rotation.y}, {action.rotation.z}, {action.rotation.w}), " +
                          $"{scaleInfo} with {paramCount} parameter(s)");
                 return new ActionResult
                 {
@@ -170,8 +170,8 @@ namespace ContextAwareSceneBuilder.Editor
             // Set position
             instance.transform.position = action.position;
 
-            // Set rotation (convert Euler angles to Quaternion)
-            instance.transform.rotation = Quaternion.Euler(action.rotation);
+            // Set rotation (quaternion directly)
+            instance.transform.rotation = action.rotation;
 
             // Set scale (only if specified, otherwise preserve prefab's default scale)
             if (action.scale.HasValue)
@@ -461,7 +461,7 @@ namespace ContextAwareSceneBuilder.Editor
 
             if (action.rotation.HasValue)
             {
-                target.transform.rotation = Quaternion.Euler(action.rotation.Value);
+                target.transform.rotation = action.rotation.Value;
             }
 
             if (action.scale.HasValue)

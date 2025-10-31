@@ -30,10 +30,10 @@ namespace ContextAwareSceneBuilder.Editor
         public Vector3 position;
 
         /// <summary>
-        /// Rotation for the instantiated prefab (Euler angles in degrees).
-        /// Defaults to (0, 0, 0) if not specified.
+        /// Rotation for the instantiated prefab (quaternion).
+        /// Defaults to identity (0, 0, 0, 1) if not specified.
         /// </summary>
-        public Vector3 rotation;
+        public Quaternion rotation;
 
         /// <summary>
         /// Scale for the instantiated prefab.
@@ -61,10 +61,10 @@ namespace ContextAwareSceneBuilder.Editor
             // Build description with transform info
             string desc = $"Create prefab '{prefabName}' named '{name}' at pos ({position.x:F1}, {position.y:F1}, {position.z:F1})";
 
-            // Add rotation if non-zero
-            if (rotation.x != 0 || rotation.y != 0 || rotation.z != 0)
+            // Add rotation if non-identity
+            if (rotation.x != 0 || rotation.y != 0 || rotation.z != 0 || rotation.w != 1)
             {
-                desc += $", rot ({rotation.x:F1}, {rotation.y:F1}, {rotation.z:F1})";
+                desc += $", rot ({rotation.x:F2}, {rotation.y:F2}, {rotation.z:F2}, {rotation.w:F2})";
             }
 
             // Add scale if specified
