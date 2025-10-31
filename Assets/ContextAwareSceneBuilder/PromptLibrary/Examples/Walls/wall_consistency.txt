@@ -1,58 +1,250 @@
-EXAMPLE: Wall Consistency - All 4 walls using same semantic point approach
+EXAMPLE: Wall Consistency - All 4 walls using same semantic point - SLS Version
 
-Goal: Create 4 walls around a floor, all using their "back" faces for consistent room boundaries
+Goal: Create 4 walls around a floor, demonstrating the CRITICAL importance of using the same semantic point for ALL walls
 
-Given: Floor4m at [0,0,0], rotation [0,0,0], scale [1,1,1]
-  - Floor spans X:[0,4], Y:[-0.05,0], Z:[-4,0] in WORLD space
-  - floor.left world = [0, -0.05, -2.0] (west edge, X=0)
-  - floor.right world = [4.0, -0.05, -2.0] (east edge, X=4)
-  - floor.front world = [2.0, -0.05, 0] (south edge, Z=0)
-  - floor.back world = [2.0, -0.05, -4.0] (north edge, Z=-4)
+Given: Floor4m at [0,0,0], rotation [0,0,0,1] (quaternion), scale [1,1,1]
 
-Wall4m LOCAL semanticPoints:
-  - "back" [2.0, 1.5, -0.121] → back face (points toward LOCAL -Z)
-  - "front" [2.0, 1.5, 0.0] → front face (points toward LOCAL +Z)
+═══════════════════════════════════════════════════════════════════════
+⚠️ CRITICAL ANTI-PATTERN: DO NOT MIX SEMANTIC POINTS
+═══════════════════════════════════════════════════════════════════════
 
-CRITICAL CONSISTENCY RULE:
-ALL 4 walls must use the SAME semantic point approach after rotation.
-We choose to align each wall's "back" face to the floor edge.
+WRONG APPROACH - Mixing front and back (CAUSES ASYMMETRY):
 
-NORTH WALL (at Z=-4 edge):
-  Rotation: [0,0,0] (no rotation needed)
-  - Wall's "back" LOCAL -Z points WORLD -Z (southward, into room) ✓
-  - wall.back LOCAL [2.0, 1.5, -0.121]
-  - Rotated: [2.0, 1.5, -0.121]
-  - pivot.z = floor.back.z - rotated.z = -4.0 - (-0.121) = -3.879
-  - Result: wall.back world at Z ≈ -4.0 ✓
+West Wall: Using wall.front (Z=0.0, no thickness offset)
+  → Thickness extends INTO room
+  → Wall intrudes +0.121m into room space
+  → Room width reduced on west side
 
-SOUTH WALL (at Z=0 edge):
-  Rotation: [0,180,0] (flip to face north into room)
-  - Wall's "back" LOCAL -Z becomes WORLD +Z (northward, into room) ✓
-  - wall.back LOCAL [2.0, 1.5, -0.121]
-  - Rotated [0,180,0]: [2.0, 1.5, -0.121] → [-2.0, 1.5, 0.121]
-  - pivot.z = floor.front.z - rotated.z = 0.0 - 0.121 = -0.121
-  - Result: wall.back world at Z ≈ 0.0 ✓
+East Wall: Using wall.back (Z=-0.121, includes thickness)
+  → Positioned correctly at edge
+  → No intrusion into room space
+  → Room width correct on east side
 
-EAST WALL (at X=4 edge):
-  Rotation: [0,90,0] (rotate to face west into room)
-  - Wall's "back" LOCAL -Z becomes WORLD -X (westward, into room) ✓
-  - wall.back LOCAL [2.0, 1.5, -0.121]
-  - Rotated [0,90,0]: [2.0, 1.5, -0.121] → [-0.121, 1.5, -2.0]
-  - pivot.x = floor.right.x - rotated.x = 4.0 - (-0.121) = 4.121
-  - Result: wall.back world at X ≈ 4.0 ✓
+Result: ASYMMETRIC ROOM
+  → West side: -0.121m intrusion
+  → East side: 0.0m intrusion
+  → Total room width: 4m - 0.121m = 3.879m (WRONG!)
+  → Furniture placement calculations break
+  → Room feels unbalanced
 
-WEST WALL (at X=0 edge):
-  Rotation: [0,270,0] (rotate to face east into room)
-  - Wall's "back" LOCAL -Z becomes WORLD +X (eastward, into room) ✓
-  - wall.back LOCAL [2.0, 1.5, -0.121]
-  - Rotated [0,270,0]: [2.0, 1.5, -0.121] → [0.121, 1.5, 2.0]
-  - pivot.x = floor.left.x - rotated.x = 0.0 - 0.121 = -0.121
-  - Result: wall.back world at X ≈ 0.0 ✓
+═══════════════════════════════════════════════════════════════════════
 
-KEY TAKEAWAY:
-All 4 walls use their "back" semantic point (after appropriate rotation) to align with floor edges.
-This creates CONSISTENT room boundaries - all walls are inset by the same amount (~0.121 units).
+CORRECT APPROACH - Consistent semantic point:
 
-WRONG APPROACH (inconsistent):
-If we used north wall's "back" but south wall's "front", they would be offset differently,
-creating an inconsistent room where some walls stick out and others are inset.
+Use wall.back (or wall.front) for ALL 4 walls!
+  → All walls have same thickness offset
+  → Symmetric room boundaries
+  → Predictable dimensions
+  → Consistent behavior
+
+This example uses wall.back for ALL walls.
+
+═══════════════════════════════════════════════════════════════════════
+
+Step 0 - WRITE DOWN metadata from Prefab Catalog:
+
+  Floor4m:
+    scale = [1.0, 1.0, 1.0]
+    semanticLocalSpaceRotation (R_ls) = [0, 0, 0, 1] (identity)
+    semanticPoints:
+      ["left", 0.0, -0.05, -2.0, -1.0, 0.0, 0.0] → west edge, normal points -X
+      ["right", 4.0, -0.05, -2.0, 1.0, 0.0, 0.0] → east edge, normal points +X
+      ["front", 2.0, -0.05, 0.0, 0.0, 0.0, 1.0] → south edge, normal points +Z
+      ["back", 2.0, -0.05, -4.0, 0.0, 0.0, -1.0] → north edge, normal points -Z
+      ["top", 2.0, 0.0, -2.0, 0.0, 1.0, 0.0] → walking surface
+
+  Wall4m:
+    scale = [1.0, 1.0, 1.0]
+    semanticLocalSpaceRotation (R_ls) = [0, 0, 0, 1] (identity)
+    semanticPoints:
+      ["back", 2.0, 1.5, -0.121, 0.0, 0.0, -1.0] → back face, normal points LOCAL -Z
+      ["front", 2.0, 1.5, 0.0, 0.0, 0.0, 1.0] → front face, normal points LOCAL +Z
+      ["bottom", 2.0, 0.0, -0.061, 0.0, -1.0, 0.0] → floor contact
+
+    CONSISTENT CHOICE: wall.back for ALL 4 walls!
+
+═══════════════════════════════════════════════════════════════════════
+WALL 1: NORTH WALL (at floor.back, Z=-4 edge)
+═══════════════════════════════════════════════════════════════════════
+
+Step 1 - Transform wall to SLS:
+  wall.back_sls = [2.0, 1.5, -0.121]
+  wall.normal_sls = [0, 0, -1]
+
+Step 2 - Calculate alignment in SLS:
+  floor.back_sls = [2.0, -0.05, -4.0]
+  floor.back_normal_sls = [0, 0, -1]
+
+  Desired: Wall faces southward (into room) = [0, 0, 1]
+
+  Two-vector alignment:
+    q1 = QuaternionFromTo([0,0,-1], [0,0,1])
+    q1 = [0, 1, 0, 0] (180° around Y)
+
+    q2 = identity (no twist needed)
+    R_sls_final = [0, 1, 0, 0]
+
+Step 3 - Convert rotation to world:
+  R_world = [0, 1, 0, 0] * [0,0,0,1] = [0, 1, 0, 0] (180° around Y)
+
+Step 4 - Calculate position in world:
+  floor.back_world = [2.0, -0.05, -4.0]
+
+  Rotate wall.back_local by [0, 1, 0, 0] (180° Y):
+    [x,y,z] → [-x, y, -z]
+    [2.0, 1.5, -0.121] → [-2.0, 1.5, 0.121]
+
+  p_world = [2.0, -0.05, -4.0] - [-2.0, 1.5, 0.121]
+  p_world = [4.0, -1.55, -4.121]
+
+OUTPUT: position=[4.0, -1.55, -4.121], rotation=[0, 1, 0, 0], scale=[1,1,1]
+
+═══════════════════════════════════════════════════════════════════════
+WALL 2: SOUTH WALL (at floor.front, Z=0 edge)
+═══════════════════════════════════════════════════════════════════════
+
+Step 1 - Transform wall to SLS:
+  wall.back_sls = [2.0, 1.5, -0.121]
+  wall.normal_sls = [0, 0, -1]
+
+Step 2 - Calculate alignment in SLS:
+  floor.front_sls = [2.0, -0.05, 0.0]
+  floor.front_normal_sls = [0, 0, 1]
+
+  Desired: Wall faces northward (into room) = [0, 0, -1]
+
+  Two-vector alignment:
+    q1 = QuaternionFromTo([0,0,-1], [0,0,-1])
+    q1 = [0, 0, 0, 1] (identity - already aligned!)
+
+    q2 = identity
+    R_sls_final = [0, 0, 0, 1]
+
+Step 3 - Convert rotation to world:
+  R_world = [0, 0, 0, 1] * [0,0,0,1] = [0, 0, 0, 1] (no rotation)
+
+Step 4 - Calculate position in world:
+  floor.front_world = [2.0, -0.05, 0.0]
+
+  wall.back_local (no rotation) = [2.0, 1.5, -0.121]
+
+  p_world = [2.0, -0.05, 0.0] - [2.0, 1.5, -0.121]
+  p_world = [0.0, -1.55, 0.121]
+
+OUTPUT: position=[0.0, -1.55, 0.121], rotation=[0, 0, 0, 1], scale=[1,1,1]
+
+═══════════════════════════════════════════════════════════════════════
+WALL 3: EAST WALL (at floor.right, X=4 edge)
+═══════════════════════════════════════════════════════════════════════
+
+Step 1 - Transform wall to SLS:
+  wall.back_sls = [2.0, 1.5, -0.121]
+  wall.normal_sls = [0, 0, -1]
+
+Step 2 - Calculate alignment in SLS:
+  floor.right_sls = [4.0, -0.05, -2.0]
+  floor.right_normal_sls = [1, 0, 0]
+
+  Desired: Wall faces westward (into room) = [-1, 0, 0]
+
+  Two-vector alignment:
+    q1 = QuaternionFromTo([0,0,-1], [-1,0,0])
+    q1 = [0, 0.707, 0, 0.707] (90° around Y)
+
+    q2 = identity
+    R_sls_final = [0, 0.707, 0, 0.707]
+
+Step 3 - Convert rotation to world:
+  R_world = [0, 0.707, 0, 0.707] * [0,0,0,1] = [0, 0.707, 0, 0.707] (90° Y)
+
+Step 4 - Calculate position in world:
+  floor.right_world = [4.0, -0.05, -2.0]
+
+  Rotate wall.back_local by [0, 0.707, 0, 0.707] (90° Y):
+    [x,y,z] → [z, y, -x]
+    [2.0, 1.5, -0.121] → [-0.121, 1.5, -2.0]
+
+  p_world = [4.0, -0.05, -2.0] - [-0.121, 1.5, -2.0]
+  p_world = [4.121, -1.55, 0.0]
+
+OUTPUT: position=[4.121, -1.55, 0.0], rotation=[0, 0.707, 0, 0.707], scale=[1,1,1]
+
+═══════════════════════════════════════════════════════════════════════
+WALL 4: WEST WALL (at floor.left, X=0 edge)
+═══════════════════════════════════════════════════════════════════════
+
+Step 1 - Transform wall to SLS:
+  wall.back_sls = [2.0, 1.5, -0.121]
+  wall.normal_sls = [0, 0, -1]
+
+Step 2 - Calculate alignment in SLS:
+  floor.left_sls = [0.0, -0.05, -2.0]
+  floor.left_normal_sls = [-1, 0, 0]
+
+  Desired: Wall faces eastward (into room) = [1, 0, 0]
+
+  Two-vector alignment:
+    q1 = QuaternionFromTo([0,0,-1], [1,0,0])
+    q1 = [0, -0.707, 0, 0.707] (270° around Y, or -90°)
+
+    q2 = identity
+    R_sls_final = [0, -0.707, 0, 0.707]
+
+Step 3 - Convert rotation to world:
+  R_world = [0, -0.707, 0, 0.707] * [0,0,0,1] = [0, -0.707, 0, 0.707] (270° Y)
+
+Step 4 - Calculate position in world:
+  floor.left_world = [0.0, -0.05, -2.0]
+
+  Rotate wall.back_local by [0, -0.707, 0, 0.707] (270° Y):
+    [x,y,z] → [-z, y, x]
+    [2.0, 1.5, -0.121] → [0.121, 1.5, 2.0]
+
+  p_world = [0.0, -0.05, -2.0] - [0.121, 1.5, 2.0]
+  p_world = [-0.121, -1.55, -4.0]
+
+OUTPUT: position=[-0.121, -1.55, -4.0], rotation=[0, -0.707, 0, 0.707], scale=[1,1,1]
+
+═══════════════════════════════════════════════════════════════════════
+VERIFICATION CHECKLIST
+═══════════════════════════════════════════════════════════════════════
+
+Before making tool calls for multiple walls, VERIFY:
+
+✓ Step 1: All 4 walls use the SAME semantic point (all "back" or all "front")
+  → North: wall.back ✓
+  → South: wall.back ✓
+  → East: wall.back ✓
+  → West: wall.back ✓
+
+✓ Step 2: All wall normals point INTO room after rotation
+  → North: points south [0,0,1] ✓
+  → South: points north [0,0,-1] ✓
+  → East: points west [-1,0,0] ✓
+  → West: points east [1,0,0] ✓
+
+✓ Step 3: All walls at Y ≈ -1.55 (same floor contact height)
+  → All Y positions match ✓
+
+✓ Step 4: Room dimensions are symmetric
+  → X span: -0.121 to 4.121 (interior width ≈ 4.242m)
+  → Z span: 0.121 to -4.121 (interior depth ≈ 4.242m)
+  → Symmetric! ✓
+
+CRITICAL NOTES:
+
+1. Semantic Point Consistency:
+   - NEVER mix wall.front and wall.back between walls
+   - Choose ONE approach and use it for ALL walls
+   - This is the #1 mistake that causes asymmetric rooms
+
+2. Quaternion Rotations:
+   - 0° (identity): [0, 0, 0, 1]
+   - 90° Y: [0, 0.707, 0, 0.707] → [x,y,z] → [z, y, -x]
+   - 180° Y: [0, 1, 0, 0] → [x,y,z] → [-x, y, -z]
+   - 270° Y: [0, -0.707, 0, 0.707] → [x,y,z] → [-z, y, x]
+
+3. Position Verification:
+   - All walls should result in positions that when combined with rotated anchors
+     place the anchor exactly at the floor edge
+   - Use Step 5 verification from wall_at_edge.txt example if unsure

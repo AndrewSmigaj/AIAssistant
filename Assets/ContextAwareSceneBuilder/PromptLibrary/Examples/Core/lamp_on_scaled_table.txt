@@ -1,39 +1,155 @@
-EXAMPLE 2: Placing lamp on SCALED table (just created, not in Scene Context yet)
+EXAMPLE 2: Placing lamp on SCALED table (just created, not in Scene Context yet) - SLS Version
 
 Goal: Place lamp on top of scaled table
 
-Given: Table just created at position [3.5,0,4.2], rotation [0,0,0]
+Given: Table just created at position [3.5,0,4.2], rotation [0,0,0,1] (quaternion)
 
-Step 0 - WRITE DOWN scales from Prefab Catalog:
-  TableSquareMedium scale = [0.341, 0.341, 0.341]
-  LampSmall scale = [1.0, 1.0, 1.0]
+Step 0 - WRITE DOWN metadata from Prefab Catalog:
 
-Step 1 - Analyze LOCAL semantic points from Prefab Catalog:
+  TableSquareMedium:
+    scale = [0.341, 0.341, 0.341]
+    semanticLocalSpaceRotation (R_ls) = [0, 0, 0, 1] (identity - already SLS-aligned)
+    semanticPoints: [["top", 0.0, 2.383, 0.0, 0.0, 1.0, 0.0]]
+      → top surface at LOCAL Y=2.383 with normal pointing up [0,1,0]
 
-  TableSquareMedium semanticPoints:
-    ["top", 0.0, 2.383, 0.0] → top surface at LOCAL Y=2.383
+  LampSmall:
+    scale = [1.0, 1.0, 1.0]
+    semanticLocalSpaceRotation (R_ls) = [0, 0, 0, 1] (identity)
+    semanticPoints: [["bottom", 0.005, 0.002, -0.008, 0.0, -1.0, 0.0]]
+      → bottom slightly offset from pivot with normal pointing down [0,-1,0]
 
-  LampSmall semanticPoints:
-    ["bottom", 0.005, 0.002, -0.008] → bottom slightly offset from pivot
+Step 1 - Transform lamp to SLS (Semantic Local Space):
 
-Step 2 - Choose rotation:
-  No special orientation needed → [0,0,0]
+  lamp.bottom_local = [0.005, 0.002, -0.008]
+  lamp.normal_local = [0, -1, 0]
 
-Step 3 - Calculate table's WORLD "top" (NOT in Scene Context yet):
-  CRITICAL: Table is SCALED, so we MUST multiply by scale!
-  table.top LOCAL [0.0,2.383,0.0]
-  Rotate [0,0,0]: no rotation change
-  Apply scale: [0.0,2.383,0.0] ⊙ [0.341,0.341,0.341] = [0.0, 0.813, 0.0]
-  table.top world = [3.5,0,4.2] + [0.0,0.813,0.0] = [3.5, 0.813, 4.2]
+  Apply R_ls_lamp = [0,0,0,1] (identity rotation):
+    lamp.bottom_sls = R_ls_lamp * lamp.bottom_local
+    lamp.bottom_sls = [0,0,0,1] * [0.005, 0.002, -0.008]
+    lamp.bottom_sls = [0.005, 0.002, -0.008] (unchanged, already in SLS)
 
-Step 4 - Calculate lamp pivot (rotation [0,0,0], scale [1,1,1]):
-  lamp.bottom LOCAL [0.005,0.002,-0.008]
-  Rotate [0,0,0]: [0.005,0.002,-0.008] → [0.005,0.002,-0.008]
-  Apply scale [1,1,1]: [0.005,0.002,-0.008] ⊙ [1,1,1] = [0.005,0.002,-0.008]
-  pivot = table.top.world - lamp.bottom.rotated_scaled
-  pivot = [3.5,0.813,4.2] - [0.005,0.002,-0.008] = [3.495, 0.811, 4.208]
+    lamp.normal_sls = R_ls_lamp * lamp.normal_local
+    lamp.normal_sls = [0,0,0,1] * [0, -1, 0]
+    lamp.normal_sls = [0, -1, 0] (unchanged)
 
-Step 5 - Verify:
-  lamp.bottom world = [3.495,0.811,4.208] + [0.005,0.002,-0.008] = [3.5, 0.813, 4.2]
-  table.top world = [3.5, 0.813, 4.2] ✓
-  NOTE: If we had FORGOTTEN table's scale, lamp would be at Y=2.383 (hovering 1.57m too high!)
+Step 2 - Check alignment in SLS (canonical reasoning space):
+
+  Transform table to SLS (from catalog LOCAL):
+    table.top_local = [0.0, 2.383, 0.0]
+    table.normal_local = [0, 1, 0]
+
+    Apply R_ls_table = [0,0,0,1]:
+      table.top_sls = R_ls_table * table.top_local = [0.0, 2.383, 0.0]
+      table.normal_sls = R_ls_table * table.normal_local = [0, 1, 0]
+
+  Check if normals oppose for surface contact:
+    table.top normal: [0, 1, 0] (points up)
+    lamp.bottom normal: [0, -1, 0] (points down)
+    They already oppose perfectly ✓
+
+  Two-vector alignment algorithm:
+    Primary alignment (normals):
+      desired_normal_sls = -table.normal_sls = -[0,1,0] = [0,-1,0]
+      q1 = QuaternionFromTo(lamp.normal_sls, desired_normal_sls)
+      q1 = QuaternionFromTo([0,-1,0], [0,-1,0])
+      q1 = [0, 0, 0, 1] (identity - normals already aligned!)
+
+    Secondary alignment (twist correction):
+      DEGENERATE CASE: Vertical normals ([0,±1,0]) mean lamp.up is parallel to contact normal
+      When projection length ≈ 0, skip twist correction to avoid gimbal jitter
+      q2 = [0, 0, 0, 1] (identity - no twist correction needed)
+
+    Final SLS rotation:
+      R_sls_final = q2 * q1
+      R_sls_final = [0,0,0,1] * [0,0,0,1]
+      R_sls_final = [0, 0, 0, 1] (identity)
+
+Step 3 - Convert rotation to world space:
+
+  R_world_lamp = R_sls_final * R_ls_lamp
+  R_world_lamp = [0,0,0,1] * [0,0,0,1]
+  R_world_lamp = [0, 0, 0, 1] (identity)
+
+Step 4 - Calculate position in world space:
+
+  A. Get table.top in world (table just created - use instance transform):
+     CRITICAL: Table is SCALED, so we MUST multiply by scale!
+
+     Given instance transform (table was just created):
+       p_wl_table = [3.5, 0, 4.2] (table's pivot position in world)
+       R_wl_table = [0, 0, 0, 1] (table's local→world rotation, identity)
+       S_table = [0.341, 0.341, 0.341] (table's scale)
+
+     Calculate R_ws_table (SLS→World adapter):
+       R_ws_table = R_wl_table * Inverse(R_ls_table)
+       R_ws_table = [0,0,0,1] * Inverse([0,0,0,1])
+       R_ws_table = [0,0,0,1] * [0,0,0,1]
+       R_ws_table = [0, 0, 0, 1] (identity)
+
+     Convert to world using formula: point_world = p_wl + R_ws * (S ⊙ offset_sls)
+
+       Scale (componentwise): S_table ⊙ table.top_sls = [0.341,0.341,0.341] ⊙ [0,2.383,0]
+                                                        = [0, 0.813, 0]
+
+       Rotate: R_ws_table * scaled = [0,0,0,1] * [0, 0.813, 0]
+                                    = [0, 0.813, 0]
+
+       Translate: table.top_world = p_wl_table + rotated
+                  table.top_world = [3.5,0,4.2] + [0, 0.813, 0]
+                  table.top_world = [3.5, 0.813, 4.2]
+
+  B. Calculate lamp anchor in world (from catalog LOCAL data):
+     Formula: anchor_world = R_world_new * (S ⊙ anchor_local)
+
+     lamp.bottom_local = [0.005, 0.002, -0.008]
+     S_lamp = [1.0, 1.0, 1.0]
+
+     Apply scale: S_lamp ⊙ lamp.bottom_local = [1,1,1] ⊙ [0.005,0.002,-0.008]
+                                               = [0.005, 0.002, -0.008]
+
+     Rotate: lamp.anchor_world = R_world_lamp * scaled
+             lamp.anchor_world = [0,0,0,1] * [0.005, 0.002, -0.008]
+             lamp.anchor_world = [0.005, 0.002, -0.008]
+
+  C. Solve for lamp pivot:
+     Formula: p_world_new = target_point - anchor_world
+
+     p_world_lamp = table.top_world - lamp.anchor_world
+     p_world_lamp = [3.5, 0.813, 4.2] - [0.005, 0.002, -0.008]
+     p_world_lamp = [3.495, 0.811, 4.208]
+
+Step 5 - Verify (optional sanity check):
+
+  Recalculate lamp.bottom world position:
+    lamp.bottom_world = p_world_lamp + lamp.anchor_world
+    lamp.bottom_world = [3.495, 0.811, 4.208] + [0.005, 0.002, -0.008]
+    lamp.bottom_world = [3.5, 0.813, 4.2] ✓
+
+  Check against table.top:
+    table.top_world = [3.5, 0.813, 4.2] ✓ Perfect match!
+
+OUTPUT TO TOOL:
+  position = [3.495, 0.811, 4.208]
+  rotation = [0, 0, 0, 1]  (quaternion [x,y,z,w], NOT Euler angles!)
+  scale = [1.0, 1.0, 1.0]
+
+CRITICAL NOTES:
+
+1. Table not in Scene Context yet (just created):
+   - We have instance transform: p_wl_table, R_wl_table from creation
+   - Calculate R_ws_table = R_wl_table * R_ls_table⁻¹
+   - Transform SLS → WORLD for position calculation
+
+2. Scale handling:
+   - SLS offsets are UNSCALED (table.top_sls = [0,2.383,0])
+   - Apply scale once during world conversion: S ⊙ offset
+   - Never scale normals (they're unit vectors)
+
+3. Position calculation in WORLD:
+   - All position math happens in world space
+   - SLS is only for reasoning (alignment, normals)
+   - Output is world coordinates for tool call
+
+4. If we forgot scale:
+   - Lamp would be at Y=2.383 (hovering 1.57m too high!)
+   - Explicit S ⊙ offset step makes this visible
