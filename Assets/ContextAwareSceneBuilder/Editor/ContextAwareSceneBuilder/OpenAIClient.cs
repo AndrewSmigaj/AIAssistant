@@ -461,27 +461,35 @@ namespace ContextAwareSceneBuilder.Editor
                 }
                 else if (functionName == "modifyGameObject")
                 {
-                    var action = ParseModifyGameObjectAction(args);
-                    action.callId = callId;
-                    plan.Actions.Add(action);
+                    var actions = ParseModifyGameObjectActions(args, callId);
+                    foreach (var action in actions)
+                    {
+                        plan.Actions.Add(action);
+                    }
                 }
                 else if (functionName == "deleteGameObject")
                 {
-                    var action = ParseDeleteGameObjectAction(args);
-                    action.callId = callId;
-                    plan.Actions.Add(action);
+                    var actions = ParseDeleteGameObjectActions(args, callId);
+                    foreach (var action in actions)
+                    {
+                        plan.Actions.Add(action);
+                    }
                 }
                 else if (functionName == "addComponent")
                 {
-                    var action = ParseAddComponentAction(args);
-                    action.callId = callId;
-                    plan.Actions.Add(action);
+                    var actions = ParseAddComponentActions(args, callId);
+                    foreach (var action in actions)
+                    {
+                        plan.Actions.Add(action);
+                    }
                 }
                 else if (functionName == "removeComponent")
                 {
-                    var action = ParseRemoveComponentAction(args);
-                    action.callId = callId;
-                    plan.Actions.Add(action);
+                    var actions = ParseRemoveComponentActions(args, callId);
+                    foreach (var action in actions)
+                    {
+                        plan.Actions.Add(action);
+                    }
                 }
                 else
                 {
@@ -544,15 +552,16 @@ namespace ContextAwareSceneBuilder.Editor
                         posNode["z"].AsFloat
                     );
 
-                    // Parse rotation (optional, defaults to zero)
-                    Vector3 rotation = Vector3.zero;
+                    // Parse rotation (optional, defaults to identity quaternion)
+                    Quaternion rotation = Quaternion.identity;
                     var rotNode = obj["rotation"];
                     if (rotNode != null)
                     {
-                        rotation = new Vector3(
+                        rotation = new Quaternion(
                             rotNode["x"]?.AsFloat ?? 0f,
                             rotNode["y"]?.AsFloat ?? 0f,
-                            rotNode["z"]?.AsFloat ?? 0f
+                            rotNode["z"]?.AsFloat ?? 0f,
+                            rotNode["w"]?.AsFloat ?? 1f
                         );
                     }
 
@@ -613,70 +622,87 @@ namespace ContextAwareSceneBuilder.Editor
 
 
         /// <summary>
-        /// Parses modifyGameObject function arguments into ModifyGameObjectAction.
+        /// Parses modifyGameObject function arguments into list of ModifyGameObjectActions.
+        /// CRITICAL: All actions share the same callId for output aggregation.
         /// </summary>
-        private static ModifyGameObjectAction ParseModifyGameObjectAction(JSONNode args)
+        /// <param name="args">Function arguments containing modifications array</param>
+        /// <param name="callId">Shared call ID for all actions in this batch</param>
+        /// <returns>List of ModifyGameObjectActions</returns>
+        private static List<ModifyGameObjectAction> ParseModifyGameObjectActions(JSONNode args, string callId)
         {
+            List<ModifyGameObjectAction> actions = new List<ModifyGameObjectAction>();
+
             try
             {
-                var action = new ModifyGameObjectAction
+                var modificationsArray = args["modifications"];
+                foreach (var kvp in modificationsArray.AsArray)
                 {
-                    instanceId = args["instanceId"].AsInt
-                };
+                    var modNode = kvp.Value;
+                    if (modNode == null) continue;
 
-                // Optional string fields
-                if (args["name"] != null)
-                    action.name = args["name"].Value;
-
-                // Optional bool field
-                if (args["active"] != null)
-                    action.active = args["active"].AsBool;
-
-                // Optional position
-                var posNode = args["position"];
-                if (posNode != null)
-                {
-                    action.position = new Vector3(
-                        posNode["x"].AsFloat,
-                        posNode["y"].AsFloat,
-                        posNode["z"].AsFloat
-                    );
-                }
-
-                // Optional rotation (Euler angles)
-                var rotNode = args["rotation"];
-                if (rotNode != null)
-                {
-                    action.rotation = new Vector3(
-                        rotNode["x"].AsFloat,
-                        rotNode["y"].AsFloat,
-                        rotNode["z"].AsFloat
-                    );
-                }
-
-                // Optional scale
-                var scaleNode = args["scale"];
-                if (scaleNode != null)
-                {
-                    action.scale = new Vector3(
-                        scaleNode["x"].AsFloat,
-                        scaleNode["y"].AsFloat,
-                        scaleNode["z"].AsFloat
-                    );
-                }
-
-                // Optional component parameters
-                var paramsNode = args["parameters"];
-                if (paramsNode != null && paramsNode.Count > 0)
-                {
-                    action.parameters = new Dictionary<string, object>();
-                    foreach (var kvp in paramsNode)
+                    var action = new ModifyGameObjectAction
                     {
-                        action.parameters[kvp.Key] = kvp.Value;
+                        callId = callId,
+                        instanceId = modNode["instanceId"].AsInt
+                    };
+
+                    // Optional string fields
+                    if (modNode["name"] != null)
+                        action.name = modNode["name"].Value;
+
+                    // Optional bool field
+                    if (modNode["active"] != null)
+                        action.active = modNode["active"].AsBool;
+
+                    // Optional position
+                    var posNode = modNode["position"];
+                    if (posNode != null)
+                    {
+                        action.position = new Vector3(
+                            posNode["x"].AsFloat,
+                            posNode["y"].AsFloat,
+                            posNode["z"].AsFloat
+                        );
                     }
+
+                    // Optional rotation (quaternion)
+                    var rotNode = modNode["rotation"];
+                    if (rotNode != null)
+                    {
+                        action.rotation = new Quaternion(
+                            rotNode["x"].AsFloat,
+                            rotNode["y"].AsFloat,
+                            rotNode["z"].AsFloat,
+                            rotNode["w"].AsFloat
+                        );
+                    }
+
+                    // Optional scale
+                    var scaleNode = modNode["scale"];
+                    if (scaleNode != null)
+                    {
+                        action.scale = new Vector3(
+                            scaleNode["x"].AsFloat,
+                            scaleNode["y"].AsFloat,
+                            scaleNode["z"].AsFloat
+                        );
+                    }
+
+                    // Optional component parameters
+                    var paramsNode = modNode["parameters"];
+                    if (paramsNode != null && paramsNode.Count > 0)
+                    {
+                        action.parameters = new Dictionary<string, object>();
+                        foreach (var paramKvp in paramsNode)
+                        {
+                            action.parameters[paramKvp.Key] = paramKvp.Value;
+                        }
+                    }
+
+                    actions.Add(action);
                 }
 
-                return action;
+                return actions;
             }
             catch (Exception ex)
             {
@@ -685,16 +711,32 @@ namespace ContextAwareSceneBuilder.Editor
         }
 
         /// <summary>
-        /// Parses deleteGameObject function arguments into DeleteGameObjectAction.
+        /// Parses deleteGameObject function arguments into list of DeleteGameObjectActions.
+        /// CRITICAL: All actions share the same callId for output aggregation.
         /// </summary>
-        private static DeleteGameObjectAction ParseDeleteGameObjectAction(JSONNode args)
+        /// <param name="args">Function arguments containing instanceIds array</param>
+        /// <param name="callId">Shared call ID for all actions in this batch</param>
+        /// <returns>List of DeleteGameObjectActions</returns>
+        private static List<DeleteGameObjectAction> ParseDeleteGameObjectActions(JSONNode args, string callId)
         {
+            List<DeleteGameObjectAction> actions = new List<DeleteGameObjectAction>();
+
             try
             {
-                return new DeleteGameObjectAction
+                var instanceIdsArray = args["instanceIds"];
+                foreach (var kvp in instanceIdsArray.AsArray)
                 {
-                    instanceId = args["instanceId"].AsInt
-                };
+                    var idNode = kvp.Value;
+                    if (idNode == null) continue;
+
+                    actions.Add(new DeleteGameObjectAction
+                    {
+                        callId = callId,
+                        instanceId = idNode.AsInt
+                    });
+                }
+
+                return actions;
             }
             catch (Exception ex)
             {
@@ -703,30 +745,46 @@ namespace ContextAwareSceneBuilder.Editor
         }
 
         /// <summary>
-        /// Parses addComponent function arguments into AddComponentAction.
+        /// Parses addComponent function arguments into list of AddComponentActions.
+        /// CRITICAL: All actions share the same callId for output aggregation.
         /// </summary>
-        private static AddComponentAction ParseAddComponentAction(JSONNode args)
+        /// <param name="args">Function arguments containing components array</param>
+        /// <param name="callId">Shared call ID for all actions in this batch</param>
+        /// <returns>List of AddComponentActions</returns>
+        private static List<AddComponentAction> ParseAddComponentActions(JSONNode args, string callId)
         {
+            List<AddComponentAction> actions = new List<AddComponentAction>();
+
             try
             {
-                var action = new AddComponentAction
+                var componentsArray = args["components"];
+                foreach (var kvp in componentsArray.AsArray)
                 {
-                    instanceId = args["instanceId"].AsInt,
-                    componentType = args["componentType"].Value
-                };
+                    var compNode = kvp.Value;
+                    if (compNode == null) continue;
 
-                // Optional component parameters
-                var paramsNode = args["parameters"];
-                if (paramsNode != null && paramsNode.Count > 0)
-                {
-                    action.parameters = new Dictionary<string, object>();
-                    foreach (var kvp in paramsNode)
+                    var action = new AddComponentAction
                     {
-                        action.parameters[kvp.Key] = kvp.Value;
+                        callId = callId,
+                        instanceId = compNode["instanceId"].AsInt,
+                        componentType = compNode["componentType"].Value
+                    };
+
+                    // Optional component parameters
+                    var paramsNode = compNode["parameters"];
+                    if (paramsNode != null && paramsNode.Count > 0)
+                    {
+                        action.parameters = new Dictionary<string, object>();
+                        foreach (var paramKvp in paramsNode)
+                        {
+                            action.parameters[paramKvp.Key] = paramKvp.Value;
+                        }
                     }
+
+                    actions.Add(action);
                 }
 
-                return action;
+                return actions;
             }
             catch (Exception ex)
             {
@@ -735,17 +793,33 @@ namespace ContextAwareSceneBuilder.Editor
         }
 
         /// <summary>
-        /// Parses removeComponent function arguments into RemoveComponentAction.
+        /// Parses removeComponent function arguments into list of RemoveComponentActions.
+        /// CRITICAL: All actions share the same callId for output aggregation.
         /// </summary>
-        private static RemoveComponentAction ParseRemoveComponentAction(JSONNode args)
+        /// <param name="args">Function arguments containing components array</param>
+        /// <param name="callId">Shared call ID for all actions in this batch</param>
+        /// <returns>List of RemoveComponentActions</returns>
+        private static List<RemoveComponentAction> ParseRemoveComponentActions(JSONNode args, string callId)
         {
+            List<RemoveComponentAction> actions = new List<RemoveComponentAction>();
+
             try
             {
-                return new RemoveComponentAction
+                var componentsArray = args["components"];
+                foreach (var kvp in componentsArray.AsArray)
                 {
-                    instanceId = args["instanceId"].AsInt,
-                    componentType = args["componentType"].Value
-                };
+                    var compNode = kvp.Value;
+                    if (compNode == null) continue;
+
+                    actions.Add(new RemoveComponentAction
+                    {
+                        callId = callId,
+                        instanceId = compNode["instanceId"].AsInt,
+                        componentType = compNode["componentType"].Value
+                    });
+                }
+
+                return actions;
             }
             catch (Exception ex)
             {

@@ -69,11 +69,12 @@ WALL 1: NORTH WALL (at floor.back, Z=-4 edge)
 
 Step 1 - Transform wall to SLS:
   wall.back_sls = [2.0, 1.5, -0.121]
+  wall.bottom_sls = [2.0, 0.0, -0.061]
   wall.normal_sls = [0, 0, -1]
 
 Step 2 - Calculate alignment in SLS:
   floor.back_sls = [2.0, -0.05, -4.0]
-  floor.back_normal_sls = [0, 0, -1]
+  floor.top_sls = [2.0, 0.0, -2.0]
 
   Desired: Wall faces southward (into room) = [0, 0, 1]
 
@@ -87,17 +88,25 @@ Step 2 - Calculate alignment in SLS:
 Step 3 - Convert rotation to world:
   R_world = [0, 1, 0, 0] * [0,0,0,1] = [0, 1, 0, 0] (180° around Y)
 
-Step 4 - Calculate position in world:
+Step 4 - Calculate position in world (MULTI-AXIS):
   floor.back_world = [2.0, -0.05, -4.0]
+  floor.top_world = [2.0, 0.0, -2.0]
 
   Rotate wall.back_local by [0, 1, 0, 0] (180° Y):
     [x,y,z] → [-x, y, -z]
     [2.0, 1.5, -0.121] → [-2.0, 1.5, 0.121]
 
-  p_world = [2.0, -0.05, -4.0] - [-2.0, 1.5, 0.121]
-  p_world = [4.0, -1.55, -4.121]
+  Rotate wall.bottom_local by [0, 1, 0, 0] (180° Y):
+    [2.0, 0.0, -0.061] → [-2.0, 0.0, 0.061]
 
-OUTPUT: position=[4.0, -1.55, -4.121], rotation=[0, 1, 0, 0], scale=[1,1,1]
+  Combine axes:
+    pivot.x = floor.back_world.x - wall.back_offset.x = 2.0 - (-2.0) = 4.0
+    pivot.y = floor.top_world.y - wall.bottom_offset.y = 0.0 - 0.0 = 0.0
+    pivot.z = floor.back_world.z - wall.back_offset.z = -4.0 - 0.121 = -4.121
+
+  p_world = [4.0, 0.0, -4.121]
+
+OUTPUT: position=[4.0, 0.0, -4.121], rotation=[0, 1, 0, 0], scale=[1,1,1]
 
 ═══════════════════════════════════════════════════════════════════════
 WALL 2: SOUTH WALL (at floor.front, Z=0 edge)
@@ -105,11 +114,12 @@ WALL 2: SOUTH WALL (at floor.front, Z=0 edge)
 
 Step 1 - Transform wall to SLS:
   wall.back_sls = [2.0, 1.5, -0.121]
+  wall.bottom_sls = [2.0, 0.0, -0.061]
   wall.normal_sls = [0, 0, -1]
 
 Step 2 - Calculate alignment in SLS:
   floor.front_sls = [2.0, -0.05, 0.0]
-  floor.front_normal_sls = [0, 0, 1]
+  floor.top_sls = [2.0, 0.0, -2.0]
 
   Desired: Wall faces northward (into room) = [0, 0, -1]
 
@@ -123,15 +133,21 @@ Step 2 - Calculate alignment in SLS:
 Step 3 - Convert rotation to world:
   R_world = [0, 0, 0, 1] * [0,0,0,1] = [0, 0, 0, 1] (no rotation)
 
-Step 4 - Calculate position in world:
+Step 4 - Calculate position in world (MULTI-AXIS):
   floor.front_world = [2.0, -0.05, 0.0]
+  floor.top_world = [2.0, 0.0, -2.0]
 
   wall.back_local (no rotation) = [2.0, 1.5, -0.121]
+  wall.bottom_local (no rotation) = [2.0, 0.0, -0.061]
 
-  p_world = [2.0, -0.05, 0.0] - [2.0, 1.5, -0.121]
-  p_world = [0.0, -1.55, 0.121]
+  Combine axes:
+    pivot.x = floor.front_world.x - wall.back_offset.x = 2.0 - 2.0 = 0.0
+    pivot.y = floor.top_world.y - wall.bottom_offset.y = 0.0 - 0.0 = 0.0
+    pivot.z = floor.front_world.z - wall.back_offset.z = 0.0 - (-0.121) = 0.121
 
-OUTPUT: position=[0.0, -1.55, 0.121], rotation=[0, 0, 0, 1], scale=[1,1,1]
+  p_world = [0.0, 0.0, 0.121]
+
+OUTPUT: position=[0.0, 0.0, 0.121], rotation=[0, 0, 0, 1], scale=[1,1,1]
 
 ═══════════════════════════════════════════════════════════════════════
 WALL 3: EAST WALL (at floor.right, X=4 edge)
@@ -139,11 +155,12 @@ WALL 3: EAST WALL (at floor.right, X=4 edge)
 
 Step 1 - Transform wall to SLS:
   wall.back_sls = [2.0, 1.5, -0.121]
+  wall.bottom_sls = [2.0, 0.0, -0.061]
   wall.normal_sls = [0, 0, -1]
 
 Step 2 - Calculate alignment in SLS:
   floor.right_sls = [4.0, -0.05, -2.0]
-  floor.right_normal_sls = [1, 0, 0]
+  floor.top_sls = [2.0, 0.0, -2.0]
 
   Desired: Wall faces westward (into room) = [-1, 0, 0]
 
@@ -157,17 +174,25 @@ Step 2 - Calculate alignment in SLS:
 Step 3 - Convert rotation to world:
   R_world = [0, 0.707, 0, 0.707] * [0,0,0,1] = [0, 0.707, 0, 0.707] (90° Y)
 
-Step 4 - Calculate position in world:
+Step 4 - Calculate position in world (MULTI-AXIS):
   floor.right_world = [4.0, -0.05, -2.0]
+  floor.top_world = [2.0, 0.0, -2.0]
 
   Rotate wall.back_local by [0, 0.707, 0, 0.707] (90° Y):
     [x,y,z] → [z, y, -x]
     [2.0, 1.5, -0.121] → [-0.121, 1.5, -2.0]
 
-  p_world = [4.0, -0.05, -2.0] - [-0.121, 1.5, -2.0]
-  p_world = [4.121, -1.55, 0.0]
+  Rotate wall.bottom_local by [0, 0.707, 0, 0.707] (90° Y):
+    [2.0, 0.0, -0.061] → [-0.061, 0.0, -2.0]
 
-OUTPUT: position=[4.121, -1.55, 0.0], rotation=[0, 0.707, 0, 0.707], scale=[1,1,1]
+  Combine axes:
+    pivot.x = floor.right_world.x - wall.back_offset.x = 4.0 - (-0.121) = 4.121
+    pivot.y = floor.top_world.y - wall.bottom_offset.y = 0.0 - 0.0 = 0.0
+    pivot.z = floor.right_world.z - wall.back_offset.z = -2.0 - (-2.0) = 0.0
+
+  p_world = [4.121, 0.0, 0.0]
+
+OUTPUT: position=[4.121, 0.0, 0.0], rotation=[0, 0.707, 0, 0.707], scale=[1,1,1]
 
 ═══════════════════════════════════════════════════════════════════════
 WALL 4: WEST WALL (at floor.left, X=0 edge)
@@ -175,11 +200,12 @@ WALL 4: WEST WALL (at floor.left, X=0 edge)
 
 Step 1 - Transform wall to SLS:
   wall.back_sls = [2.0, 1.5, -0.121]
+  wall.bottom_sls = [2.0, 0.0, -0.061]
   wall.normal_sls = [0, 0, -1]
 
 Step 2 - Calculate alignment in SLS:
   floor.left_sls = [0.0, -0.05, -2.0]
-  floor.left_normal_sls = [-1, 0, 0]
+  floor.top_sls = [2.0, 0.0, -2.0]
 
   Desired: Wall faces eastward (into room) = [1, 0, 0]
 
@@ -193,17 +219,25 @@ Step 2 - Calculate alignment in SLS:
 Step 3 - Convert rotation to world:
   R_world = [0, -0.707, 0, 0.707] * [0,0,0,1] = [0, -0.707, 0, 0.707] (270° Y)
 
-Step 4 - Calculate position in world:
+Step 4 - Calculate position in world (MULTI-AXIS):
   floor.left_world = [0.0, -0.05, -2.0]
+  floor.top_world = [2.0, 0.0, -2.0]
 
   Rotate wall.back_local by [0, -0.707, 0, 0.707] (270° Y):
     [x,y,z] → [-z, y, x]
     [2.0, 1.5, -0.121] → [0.121, 1.5, 2.0]
 
-  p_world = [0.0, -0.05, -2.0] - [0.121, 1.5, 2.0]
-  p_world = [-0.121, -1.55, -4.0]
+  Rotate wall.bottom_local by [0, -0.707, 0, 0.707] (270° Y):
+    [2.0, 0.0, -0.061] → [0.061, 0.0, 2.0]
 
-OUTPUT: position=[-0.121, -1.55, -4.0], rotation=[0, -0.707, 0, 0.707], scale=[1,1,1]
+  Combine axes:
+    pivot.x = floor.left_world.x - wall.back_offset.x = 0.0 - 0.121 = -0.121
+    pivot.y = floor.top_world.y - wall.bottom_offset.y = 0.0 - 0.0 = 0.0
+    pivot.z = floor.left_world.z - wall.back_offset.z = -2.0 - 2.0 = -4.0
+
+  p_world = [-0.121, 0.0, -4.0]
+
+OUTPUT: position=[-0.121, 0.0, -4.0], rotation=[0, -0.707, 0, 0.707], scale=[1,1,1]
 
 ═══════════════════════════════════════════════════════════════════════
 VERIFICATION CHECKLIST

@@ -98,9 +98,13 @@ Step 3 - Convert rotation to world:
   R_world_wall = [0, 0.707, 0, 0.707] * [0,0,0,1]
   R_world_wall = [0, 0.707, 0, 0.707] (Y=90° rotation)
 
-Step 4 - Calculate position in world:
+Step 4 - Calculate position in world (MULTI-AXIS ALIGNMENT):
 
-  A. Get floor.right in world (floor just created - use instance transform):
+  CRITICAL: Walls standing on floors require DIFFERENT semantic points for each axis:
+    - Y-axis (vertical): wall.bottom → floor.top (NOT wall.back!)
+    - X/Z-axis (horizontal): wall.back → floor.right (edge alignment)
+
+  A. Get floor targets in world (floor just created - use instance transform):
      p_wl_floor = [0, 0, 0]
      R_wl_floor = [0, 0, 0, 1]
      S_floor = [1, 1, 1]
@@ -109,50 +113,79 @@ Step 4 - Calculate position in world:
        R_ws_floor = R_wl_floor * Inverse(R_ls_floor)
        R_ws_floor = [0,0,0,1] * [0,0,0,1] = [0,0,0,1]
 
-     Convert floor.right to world:
+     Convert floor.right to world (for X/Z):
        Scale: S ⊙ floor.right_sls = [1,1,1] ⊙ [4.0,-0.05,-2.0] = [4.0,-0.05,-2.0]
        Rotate: R_ws * scaled = [0,0,0,1] * [4.0,-0.05,-2.0] = [4.0,-0.05,-2.0]
        Translate: floor.right_world = p_wl + rotated = [0,0,0] + [4.0,-0.05,-2.0]
        floor.right_world = [4.0, -0.05, -2.0]
 
-  B. Calculate wall anchor in world:
-     wall.back_local = [2.0, 1.5, -0.121]
+     Convert floor.top to world (for Y):
+       Scale: S ⊙ floor.top_sls = [1,1,1] ⊙ [2.0, 0.0, -2.0] = [2.0, 0.0, -2.0]
+       Rotate: R_ws * scaled = [0,0,0,1] * [2.0, 0.0, -2.0] = [2.0, 0.0, -2.0]
+       Translate: floor.top_world = p_wl + rotated = [0,0,0] + [2.0, 0.0, -2.0]
+       floor.top_world = [2.0, 0.0, -2.0]
+
+  B. Calculate wall anchors in world (after rotation):
+     R_world_wall = [0, 0.707, 0, 0.707] (90° Y rotation)
      S_wall = [1, 1, 1]
 
-     Formula: anchor_world = R_world_wall * (S ⊙ anchor_local)
-
-     Scale: [1,1,1] ⊙ [2.0, 1.5, -0.121] = [2.0, 1.5, -0.121]
-
-     Rotate by [0, 0.707, 0, 0.707] (Y=90°):
-       Rotation matrix for +90° around Y:
-         [ 0  0  1]
-         [ 0  1  0]
-         [-1  0  0]
-
-       Applying [x,y,z] → [z, y, -x]:
+     Anchor for X/Z (wall.back):
+       wall.back_local = [2.0, 1.5, -0.121]
+       Scale: [1,1,1] ⊙ [2.0, 1.5, -0.121] = [2.0, 1.5, -0.121]
+       Rotate by [0, 0.707, 0, 0.707] (Y=90°):
+         [x,y,z] → [z, y, -x]
          [2.0, 1.5, -0.121] → [-0.121, 1.5, -2.0]
+       wall.back_world_offset = [-0.121, 1.5, -2.0]
 
-     wall.anchor_world = [-0.121, 1.5, -2.0]
+     Anchor for Y (wall.bottom):
+       wall.bottom_local = [2.0, 0.0, -0.061]
+       Scale: [1,1,1] ⊙ [2.0, 0.0, -0.061] = [2.0, 0.0, -0.061]
+       Rotate by [0, 0.707, 0, 0.707] (Y=90°):
+         [x,y,z] → [z, y, -x]
+         [2.0, 0.0, -0.061] → [-0.061, 0.0, -2.0]
+       wall.bottom_world_offset = [-0.061, 0.0, -2.0]
 
-  C. Solve for wall pivot:
-     Formula: p_world_new = target_point - anchor_world
+  C. Solve for wall pivot (COMBINE axes):
+     X-axis from floor.right and wall.back:
+       pivot.x = floor.right_world.x - wall.back_world_offset.x
+       pivot.x = 4.0 - (-0.121) = 4.121
 
-     p_world_wall = floor.right_world - wall.anchor_world
-     p_world_wall = [4.0, -0.05, -2.0] - [-0.121, 1.5, -2.0]
-     p_world_wall = [4.121, -1.55, 0.0]
+     Y-axis from floor.top and wall.bottom:
+       pivot.y = floor.top_world.y - wall.bottom_world_offset.y
+       pivot.y = 0.0 - 0.0 = 0.0
 
-Step 5 - Verify (optional sanity check):
+     Z-axis from floor.right and wall.back:
+       pivot.z = floor.right_world.z - wall.back_world_offset.z
+       pivot.z = -2.0 - (-2.0) = 0.0
 
-  Recalculate wall.back world position:
-    wall.back_world = p_world_wall + wall.anchor_world
-    wall.back_world = [4.121, -1.55, 0.0] + [-0.121, 1.5, -2.0]
-    wall.back_world = [4.0, -0.05, -2.0] ✓
+     p_world_wall = [4.121, 0.0, 0.0]
 
-  Check against floor.right:
-    floor.right_world = [4.0, -0.05, -2.0] ✓ Perfect match!
+Step 5 - Verify (MANDATORY sanity check):
+
+  Recalculate wall.back world position (for X/Z verification):
+    wall.back_world = p_world_wall + wall.back_world_offset
+    wall.back_world = [4.121, 0.0, 0.0] + [-0.121, 1.5, -2.0]
+    wall.back_world = [4.0, 1.5, -2.0]
+
+  Check X/Z against floor.right:
+    floor.right_world X/Z = [4.0, -, -2.0] ✓ Match!
+
+  Recalculate wall.bottom world position (for Y verification):
+    wall.bottom_world = p_world_wall + wall.bottom_world_offset
+    wall.bottom_world = [4.121, 0.0, 0.0] + [-0.061, 0.0, -2.0]
+    wall.bottom_world = [4.060, 0.0, -2.0]
+
+  Check Y against floor.top:
+    floor.top_world.y = 0.0
+    wall.bottom_world.y = 0.0 ✓ Perfect vertical alignment!
+
+  CRITICAL VERIFICATION PASSED:
+    ✓ Wall.bottom sits ON floor.top (Y = 0.0)
+    ✓ Wall.back aligns with floor.right edge (X/Z correct)
+    ✓ NO "floor halfway up wall" problem!
 
 OUTPUT TO TOOL:
-  position = [4.121, -1.55, 0.0]
+  position = [4.121, 0.0, 0.0]
   rotation = [0, 0.707, 0, 0.707]  (quaternion [x,y,z,w], NOT Euler angles!)
   scale = [1.0, 1.0, 1.0]
 
