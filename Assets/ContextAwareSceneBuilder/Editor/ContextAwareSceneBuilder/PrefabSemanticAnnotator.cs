@@ -84,6 +84,9 @@ namespace ContextAwareSceneBuilder.Editor
 
             if (GUILayout.Button("Refresh Prefabs", EditorStyles.toolbarButton, GUILayout.Width(120)))
             {
+                // Trigger full rescan to pick up prefab changes
+                PrefabScanner.ScanAll();
+                PrefabRegistryCache.Invalidate();
                 LoadPrefabList();
             }
 

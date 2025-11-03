@@ -10,19 +10,19 @@ Given: Floor4m at [0,0,0], rotation [0,0,0,1] (quaternion), scale [1,1,1]
 
 WRONG APPROACH - Mixing front and back (CAUSES ASYMMETRY):
 
-West Wall: Using wall.front (Z=0.0, no thickness offset)
+West Wall: Using wall.back (Z=-0.121, includes thickness offset)
+  → Thickness extends OUTWARD (correct)
+  → No intrusion into room space
+  → Room width correct on west side
+
+East Wall: Using wall.front (Z=0.0, no thickness offset)
   → Thickness extends INTO room
   → Wall intrudes +0.121m into room space
-  → Room width reduced on west side
-
-East Wall: Using wall.back (Z=-0.121, includes thickness)
-  → Positioned correctly at edge
-  → No intrusion into room space
-  → Room width correct on east side
+  → Room width reduced on east side
 
 Result: ASYMMETRIC ROOM
-  → West side: -0.121m intrusion
-  → East side: 0.0m intrusion
+  → West side: 0.0m intrusion
+  → East side: -0.121m intrusion
   → Total room width: 4m - 0.121m = 3.879m (WRONG!)
   → Furniture placement calculations break
   → Room feels unbalanced
@@ -31,13 +31,13 @@ Result: ASYMMETRIC ROOM
 
 CORRECT APPROACH - Consistent semantic point:
 
-Use wall.back (or wall.front) for ALL 4 walls!
-  → All walls have same thickness offset
+Use wall.back for POSITION on ALL 4 walls!
+  → All walls have same positioning approach
   → Symmetric room boundaries
-  → Predictable dimensions
-  → Consistent behavior
+  → NO floor gaps between adjacent rooms
+  → Use wall.front NORMAL for rotation (interior faces inward)
 
-This example uses wall.back for ALL walls.
+This example uses wall.back for POSITION, wall.front normal for ROTATION.
 
 ═══════════════════════════════════════════════════════════════════════
 
@@ -57,39 +57,88 @@ Step 0 - WRITE DOWN metadata from Prefab Catalog:
     scale = [1.0, 1.0, 1.0]
     semanticLocalSpaceRotation (R_ls) = [0, 0, 0, 1] (identity)
     semanticPoints:
-      ["back", 2.0, 1.5, -0.121, 0.0, 0.0, -1.0] → back face, normal points LOCAL -Z
-      ["front", 2.0, 1.5, 0.0, 0.0, 0.0, 1.0] → front face, normal points LOCAL +Z
+      ["front", 2.0, 1.5, 0.0, 0.0, 0.0, 1.0] → interior face, normal points LOCAL +Z
+      ["back", 2.0, 1.5, -0.121, 0.0, 0.0, -1.0] → exterior face, normal points LOCAL -Z
       ["bottom", 2.0, 0.0, -0.061, 0.0, -1.0, 0.0] → floor contact
 
-    CONSISTENT CHOICE: wall.back for ALL 4 walls!
+    CRITICAL: Use wall.back for POSITION (no floor gaps), wall.front normal for ROTATION (faces inward)!
 
 ═══════════════════════════════════════════════════════════════════════
 WALL 1: NORTH WALL (at floor.back, Z=-4 edge)
 ═══════════════════════════════════════════════════════════════════════
 
 Step 1 - Transform wall to SLS:
-  wall.back_sls = [2.0, 1.5, -0.121]
-  wall.bottom_sls = [2.0, 0.0, -0.061]
-  wall.normal_sls = [0, 0, -1]
+  For ROTATION - use wall.front normal:
+    wall.front_normal_sls = [0, 0, 1]
+
+  For POSITION - use wall.back:
+    wall.back_sls = [2.0, 1.5, -0.121]
+    wall.bottom_sls = [2.0, 0.0, -0.061]
 
 Step 2 - Calculate alignment in SLS:
   floor.back_sls = [2.0, -0.05, -4.0]
   floor.top_sls = [2.0, 0.0, -2.0]
 
-  Desired: Wall faces southward (into room) = [0, 0, 1]
+  Desired: Wall.front faces southward (into room) = [0, 0, 1]
 
   Two-vector alignment:
-    q1 = QuaternionFromTo([0,0,-1], [0,0,1])
-    q1 = [0, 1, 0, 0] (180° around Y)
+    q1 = QuaternionFromTo(wall.front_normal_sls, [0, 0, 1])
+    q1 = QuaternionFromTo([0,0,1], [0,0,1])
+    q1 = [0, 0, 0, 1] (identity - already aligned!)
 
     q2 = identity (no twist needed)
-    R_sls_final = [0, 1, 0, 0]
+    R_sls_final = [0, 0, 0, 1]
 
 Step 3 - Convert rotation to world:
-  R_world = [0, 1, 0, 0] * [0,0,0,1] = [0, 1, 0, 0] (180° around Y)
+  R_world = [0, 0, 0, 1] * [0,0,0,1] = [0, 0, 0, 1] (no rotation)
 
 Step 4 - Calculate position in world (MULTI-AXIS):
   floor.back_world = [2.0, -0.05, -4.0]
+  floor.top_world = [2.0, 0.0, -2.0]
+
+  wall.back_local (no rotation, identity) = [2.0, 1.5, -0.121]
+  wall.bottom_local (no rotation, identity) = [2.0, 0.0, -0.061]
+
+  Combine axes:
+    pivot.x = floor.back_world.x - wall.back_offset.x = 2.0 - 2.0 = 0.0
+    pivot.y = floor.top_world.y - wall.bottom_offset.y = 0.0 - 0.0 = 0.0
+    pivot.z = floor.back_world.z - wall.back_offset.z = -4.0 - (-0.121) = -3.879
+
+  p_world = [0.0, 0.0, -3.879]
+
+OUTPUT: position=[0.0, 0.0, -3.879], rotation=[0, 0, 0, 1], scale=[1,1,1]
+
+═══════════════════════════════════════════════════════════════════════
+WALL 2: SOUTH WALL (at floor.front, Z=0 edge)
+═══════════════════════════════════════════════════════════════════════
+
+Step 1 - Transform wall to SLS:
+  For ROTATION - use wall.front normal:
+    wall.front_normal_sls = [0, 0, 1]
+
+  For POSITION - use wall.back:
+    wall.back_sls = [2.0, 1.5, -0.121]
+    wall.bottom_sls = [2.0, 0.0, -0.061]
+
+Step 2 - Calculate alignment in SLS:
+  floor.front_sls = [2.0, -0.05, 0.0]
+  floor.top_sls = [2.0, 0.0, -2.0]
+
+  Desired: Wall.front faces northward (into room) = [0, 0, -1]
+
+  Two-vector alignment:
+    q1 = QuaternionFromTo(wall.front_normal_sls, [0, 0, -1])
+    q1 = QuaternionFromTo([0,0,1], [0,0,-1])
+    q1 = [0, 1, 0, 0] (180° rotation around Y)
+
+    q2 = identity
+    R_sls_final = [0, 1, 0, 0]
+
+Step 3 - Convert rotation to world:
+  R_world = [0, 1, 0, 0] * [0,0,0,1] = [0, 1, 0, 0] (180° rotation)
+
+Step 4 - Calculate position in world (MULTI-AXIS):
+  floor.front_world = [2.0, -0.05, 0.0]
   floor.top_world = [2.0, 0.0, -2.0]
 
   Rotate wall.back_local by [0, 1, 0, 0] (180° Y):
@@ -100,72 +149,84 @@ Step 4 - Calculate position in world (MULTI-AXIS):
     [2.0, 0.0, -0.061] → [-2.0, 0.0, 0.061]
 
   Combine axes:
-    pivot.x = floor.back_world.x - wall.back_offset.x = 2.0 - (-2.0) = 4.0
+    pivot.x = floor.front_world.x - wall.back_offset.x = 2.0 - (-2.0) = 4.0
     pivot.y = floor.top_world.y - wall.bottom_offset.y = 0.0 - 0.0 = 0.0
-    pivot.z = floor.back_world.z - wall.back_offset.z = -4.0 - 0.121 = -4.121
+    pivot.z = floor.front_world.z - wall.back_offset.z = 0.0 - 0.121 = -0.121
 
-  p_world = [4.0, 0.0, -4.121]
+  p_world = [4.0, 0.0, -0.121]
 
-OUTPUT: position=[4.0, 0.0, -4.121], rotation=[0, 1, 0, 0], scale=[1,1,1]
-
-═══════════════════════════════════════════════════════════════════════
-WALL 2: SOUTH WALL (at floor.front, Z=0 edge)
-═══════════════════════════════════════════════════════════════════════
-
-Step 1 - Transform wall to SLS:
-  wall.back_sls = [2.0, 1.5, -0.121]
-  wall.bottom_sls = [2.0, 0.0, -0.061]
-  wall.normal_sls = [0, 0, -1]
-
-Step 2 - Calculate alignment in SLS:
-  floor.front_sls = [2.0, -0.05, 0.0]
-  floor.top_sls = [2.0, 0.0, -2.0]
-
-  Desired: Wall faces northward (into room) = [0, 0, -1]
-
-  Two-vector alignment:
-    q1 = QuaternionFromTo([0,0,-1], [0,0,-1])
-    q1 = [0, 0, 0, 1] (identity - already aligned!)
-
-    q2 = identity
-    R_sls_final = [0, 0, 0, 1]
-
-Step 3 - Convert rotation to world:
-  R_world = [0, 0, 0, 1] * [0,0,0,1] = [0, 0, 0, 1] (no rotation)
-
-Step 4 - Calculate position in world (MULTI-AXIS):
-  floor.front_world = [2.0, -0.05, 0.0]
-  floor.top_world = [2.0, 0.0, -2.0]
-
-  wall.back_local (no rotation) = [2.0, 1.5, -0.121]
-  wall.bottom_local (no rotation) = [2.0, 0.0, -0.061]
-
-  Combine axes:
-    pivot.x = floor.front_world.x - wall.back_offset.x = 2.0 - 2.0 = 0.0
-    pivot.y = floor.top_world.y - wall.bottom_offset.y = 0.0 - 0.0 = 0.0
-    pivot.z = floor.front_world.z - wall.back_offset.z = 0.0 - (-0.121) = 0.121
-
-  p_world = [0.0, 0.0, 0.121]
-
-OUTPUT: position=[0.0, 0.0, 0.121], rotation=[0, 0, 0, 1], scale=[1,1,1]
+OUTPUT: position=[4.0, 0.0, -0.121], rotation=[0, 1, 0, 0], scale=[1,1,1]
 
 ═══════════════════════════════════════════════════════════════════════
 WALL 3: EAST WALL (at floor.right, X=4 edge)
 ═══════════════════════════════════════════════════════════════════════
 
 Step 1 - Transform wall to SLS:
-  wall.back_sls = [2.0, 1.5, -0.121]
-  wall.bottom_sls = [2.0, 0.0, -0.061]
-  wall.normal_sls = [0, 0, -1]
+  For ROTATION - use wall.front normal:
+    wall.front_normal_sls = [0, 0, 1]
+
+  For POSITION - use wall.back:
+    wall.back_sls = [2.0, 1.5, -0.121]
+    wall.bottom_sls = [2.0, 0.0, -0.061]
 
 Step 2 - Calculate alignment in SLS:
   floor.right_sls = [4.0, -0.05, -2.0]
   floor.top_sls = [2.0, 0.0, -2.0]
 
-  Desired: Wall faces westward (into room) = [-1, 0, 0]
+  Desired: Wall.front faces westward (into room) = [-1, 0, 0]
 
   Two-vector alignment:
-    q1 = QuaternionFromTo([0,0,-1], [-1,0,0])
+    q1 = QuaternionFromTo(wall.front_normal_sls, [-1, 0, 0])
+    q1 = QuaternionFromTo([0,0,1], [-1,0,0])
+    q1 = [0, -0.707, 0, 0.707] (-90° around Y)
+
+    q2 = identity
+    R_sls_final = [0, -0.707, 0, 0.707]
+
+Step 3 - Convert rotation to world:
+  R_world = [0, -0.707, 0, 0.707] * [0,0,0,1] = [0, -0.707, 0, 0.707] (-90° Y)
+
+Step 4 - Calculate position in world (MULTI-AXIS):
+  floor.right_world = [4.0, -0.05, -2.0]
+  floor.top_world = [2.0, 0.0, -2.0]
+
+  Rotate wall.back_local by [0, -0.707, 0, 0.707] (-90° Y):
+    [x,y,z] → [-z, y, x]
+    [2.0, 1.5, -0.121] → [0.121, 1.5, 2.0]
+
+  Rotate wall.bottom_local by [0, -0.707, 0, 0.707] (-90° Y):
+    [2.0, 0.0, -0.061] → [0.061, 0.0, 2.0]
+
+  Combine axes:
+    pivot.x = floor.right_world.x - wall.back_offset.x = 4.0 - 0.121 = 3.879
+    pivot.y = floor.top_world.y - wall.bottom_offset.y = 0.0 - 0.0 = 0.0
+    pivot.z = floor.right_world.z - wall.back_offset.z = -2.0 - 2.0 = -4.0
+
+  p_world = [3.879, 0.0, -4.0]
+
+OUTPUT: position=[3.879, 0.0, -4.0], rotation=[0, -0.707, 0, 0.707], scale=[1,1,1]
+
+═══════════════════════════════════════════════════════════════════════
+WALL 4: WEST WALL (at floor.left, X=0 edge)
+═══════════════════════════════════════════════════════════════════════
+
+Step 1 - Transform wall to SLS:
+  For ROTATION - use wall.front normal:
+    wall.front_normal_sls = [0, 0, 1]
+
+  For POSITION - use wall.back:
+    wall.back_sls = [2.0, 1.5, -0.121]
+    wall.bottom_sls = [2.0, 0.0, -0.061]
+
+Step 2 - Calculate alignment in SLS:
+  floor.left_sls = [0.0, -0.05, -2.0]
+  floor.top_sls = [2.0, 0.0, -2.0]
+
+  Desired: Wall.front faces eastward (into room) = [1, 0, 0]
+
+  Two-vector alignment:
+    q1 = QuaternionFromTo(wall.front_normal_sls, [1, 0, 0])
+    q1 = QuaternionFromTo([0,0,1], [1,0,0])
     q1 = [0, 0.707, 0, 0.707] (90° around Y)
 
     q2 = identity
@@ -175,7 +236,7 @@ Step 3 - Convert rotation to world:
   R_world = [0, 0.707, 0, 0.707] * [0,0,0,1] = [0, 0.707, 0, 0.707] (90° Y)
 
 Step 4 - Calculate position in world (MULTI-AXIS):
-  floor.right_world = [4.0, -0.05, -2.0]
+  floor.left_world = [0.0, -0.05, -2.0]
   floor.top_world = [2.0, 0.0, -2.0]
 
   Rotate wall.back_local by [0, 0.707, 0, 0.707] (90° Y):
@@ -186,58 +247,13 @@ Step 4 - Calculate position in world (MULTI-AXIS):
     [2.0, 0.0, -0.061] → [-0.061, 0.0, -2.0]
 
   Combine axes:
-    pivot.x = floor.right_world.x - wall.back_offset.x = 4.0 - (-0.121) = 4.121
+    pivot.x = floor.left_world.x - wall.back_offset.x = 0.0 - (-0.121) = 0.121
     pivot.y = floor.top_world.y - wall.bottom_offset.y = 0.0 - 0.0 = 0.0
-    pivot.z = floor.right_world.z - wall.back_offset.z = -2.0 - (-2.0) = 0.0
+    pivot.z = floor.left_world.z - wall.back_offset.z = -2.0 - (-2.0) = 0.0
 
-  p_world = [4.121, 0.0, 0.0]
+  p_world = [0.121, 0.0, 0.0]
 
-OUTPUT: position=[4.121, 0.0, 0.0], rotation=[0, 0.707, 0, 0.707], scale=[1,1,1]
-
-═══════════════════════════════════════════════════════════════════════
-WALL 4: WEST WALL (at floor.left, X=0 edge)
-═══════════════════════════════════════════════════════════════════════
-
-Step 1 - Transform wall to SLS:
-  wall.back_sls = [2.0, 1.5, -0.121]
-  wall.bottom_sls = [2.0, 0.0, -0.061]
-  wall.normal_sls = [0, 0, -1]
-
-Step 2 - Calculate alignment in SLS:
-  floor.left_sls = [0.0, -0.05, -2.0]
-  floor.top_sls = [2.0, 0.0, -2.0]
-
-  Desired: Wall faces eastward (into room) = [1, 0, 0]
-
-  Two-vector alignment:
-    q1 = QuaternionFromTo([0,0,-1], [1,0,0])
-    q1 = [0, -0.707, 0, 0.707] (270° around Y, or -90°)
-
-    q2 = identity
-    R_sls_final = [0, -0.707, 0, 0.707]
-
-Step 3 - Convert rotation to world:
-  R_world = [0, -0.707, 0, 0.707] * [0,0,0,1] = [0, -0.707, 0, 0.707] (270° Y)
-
-Step 4 - Calculate position in world (MULTI-AXIS):
-  floor.left_world = [0.0, -0.05, -2.0]
-  floor.top_world = [2.0, 0.0, -2.0]
-
-  Rotate wall.back_local by [0, -0.707, 0, 0.707] (270° Y):
-    [x,y,z] → [-z, y, x]
-    [2.0, 1.5, -0.121] → [0.121, 1.5, 2.0]
-
-  Rotate wall.bottom_local by [0, -0.707, 0, 0.707] (270° Y):
-    [2.0, 0.0, -0.061] → [0.061, 0.0, 2.0]
-
-  Combine axes:
-    pivot.x = floor.left_world.x - wall.back_offset.x = 0.0 - 0.121 = -0.121
-    pivot.y = floor.top_world.y - wall.bottom_offset.y = 0.0 - 0.0 = 0.0
-    pivot.z = floor.left_world.z - wall.back_offset.z = -2.0 - 2.0 = -4.0
-
-  p_world = [-0.121, 0.0, -4.0]
-
-OUTPUT: position=[-0.121, 0.0, -4.0], rotation=[0, -0.707, 0, 0.707], scale=[1,1,1]
+OUTPUT: position=[0.121, 0.0, 0.0], rotation=[0, 0.707, 0, 0.707], scale=[1,1,1]
 
 ═══════════════════════════════════════════════════════════════════════
 VERIFICATION CHECKLIST
@@ -245,25 +261,27 @@ VERIFICATION CHECKLIST
 
 Before making tool calls for multiple walls, VERIFY:
 
-✓ Step 1: All 4 walls use the SAME semantic point (all "back" or all "front")
-  → North: wall.back ✓
-  → South: wall.back ✓
-  → East: wall.back ✓
-  → West: wall.back ✓
+✓ Step 1: All 4 walls use wall.back for POSITION, wall.front normal for ROTATION
+  → North: wall.back position, wall.front faces south ✓
+  → South: wall.back position, wall.front faces north ✓
+  → East: wall.back position, wall.front faces west ✓
+  → West: wall.back position, wall.front faces east ✓
 
-✓ Step 2: All wall normals point INTO room after rotation
+✓ Step 2: All wall.front normals point INTO room after rotation
   → North: points south [0,0,1] ✓
   → South: points north [0,0,-1] ✓
   → East: points west [-1,0,0] ✓
   → West: points east [1,0,0] ✓
 
-✓ Step 3: All walls at Y ≈ -1.55 (same floor contact height)
+✓ Step 3: All walls at Y = 0.0 (same floor contact height)
   → All Y positions match ✓
 
-✓ Step 4: Room dimensions are symmetric
-  → X span: -0.121 to 4.121 (interior width ≈ 4.242m)
-  → Z span: 0.121 to -4.121 (interior depth ≈ 4.242m)
-  → Symmetric! ✓
+✓ Step 4: Wall.back aligned with floor edges (NO GAPS between adjacent rooms)
+  → North wall.back at Z = -4.0 (floor.back edge) ✓
+  → South wall.back at Z = 0.0 (floor.front edge) ✓
+  → East wall.back at X = 4.0 (floor.right edge) ✓
+  → West wall.back at X = 0.0 (floor.left edge) ✓
+  → Adjacent rooms share floor edges perfectly! ✓
 
 CRITICAL NOTES:
 

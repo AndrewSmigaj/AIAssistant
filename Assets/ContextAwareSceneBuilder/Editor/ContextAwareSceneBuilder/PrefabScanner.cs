@@ -19,11 +19,19 @@ namespace ContextAwareSceneBuilder.Editor
         /// </summary>
         public static void ScanAll()
         {
+            Debug.Log("[AI Assistant] === STARTING PREFAB SCAN ===");
             try
             {
+                // Force Unity to reload all assets from disk before scanning
+                // This ensures we read the latest prefab data, not cached versions
+                Debug.Log("[AI Assistant] Refreshing AssetDatabase...");
+                AssetDatabase.Refresh();
+                Debug.Log("[AI Assistant] AssetDatabase refresh complete");
+
                 // Get scan folder from settings
                 var settings = AIAssistantSettings.GetOrCreateSettings();
                 string scanFolder = settings.PrefabScanFolder;
+                Debug.Log($"[AI Assistant] Scan folder: {scanFolder}");
 
                 if (!AssetDatabase.IsValidFolder(scanFolder))
                 {
@@ -74,6 +82,9 @@ namespace ContextAwareSceneBuilder.Editor
                 string json = JsonUtility.ToJson(registry, true);
                 File.WriteAllText(outputPath, json);
 
+                // Invalidate cache so next Load() reads the fresh data
+                PrefabRegistryCache.Invalidate();
+
                 Debug.Log($"[AI Assistant] Successfully scanned {prefabs.Count} prefab(s) to {outputPath}");
             }
             catch (Exception ex)
@@ -103,24 +114,21 @@ namespace ContextAwareSceneBuilder.Editor
                 return null;
             }
 
-            // Temporarily instantiate to get accurate bounds
-            GameObject tempInstance = PrefabUtility.InstantiatePrefab(prefabAsset) as GameObject;
-            if (tempInstance == null)
+            // Load prefab contents directly from disk (no caching issues)
+            GameObject prefabContents = PrefabUtility.LoadPrefabContents(path);
+            if (prefabContents == null)
             {
-                Debug.LogWarning($"[AI Assistant] Failed to instantiate prefab: {path}");
+                Debug.LogWarning($"[AI Assistant] Failed to load prefab contents: {path}");
                 return null;
             }
-
-            // Prevent temp instance from polluting scene/hierarchy
-            tempInstance.hideFlags = HideFlags.HideAndDontSave;
 
             try
             {
                 // Capture prefab's default local scale
-                Vector3 prefabScale = tempInstance.transform.localScale;
+                Vector3 prefabScale = prefabContents.transform.localScale;
 
-                // Scan components on temp instance
-                var components = tempInstance.GetComponents<MonoBehaviour>();
+                // Scan components on prefab contents
+                var components = prefabContents.GetComponents<MonoBehaviour>();
                 List<ComponentMetadata> componentMetas = new List<ComponentMetadata>();
                 foreach (var component in components)
                 {
@@ -145,7 +153,7 @@ namespace ContextAwareSceneBuilder.Editor
 
                 // Extract semantic tags
                 string[] semanticTags = null;
-                SemanticTags semanticTagsComp = tempInstance.GetComponent<SemanticTags>();
+                SemanticTags semanticTagsComp = prefabContents.GetComponent<SemanticTags>();
                 if (semanticTagsComp != null && semanticTagsComp.tags != null && semanticTagsComp.tags.Count > 0)
                 {
                     semanticTags = semanticTagsComp.tags.ToArray();
@@ -154,7 +162,7 @@ namespace ContextAwareSceneBuilder.Editor
 
                 // Extract semantic points and ensure pivot point exists
                 SemanticPoint[] semanticPoints = null;
-                Transform semanticPointsContainer = tempInstance.transform.Find("SemanticPoints");
+                Transform semanticPointsContainer = prefabContents.transform.Find("SemanticPoints");
                 if (semanticPointsContainer != null)
                 {
                     List<SemanticPoint> points = new List<SemanticPoint>();
@@ -206,8 +214,8 @@ namespace ContextAwareSceneBuilder.Editor
             }
             finally
             {
-                // CRITICAL: Always destroy temp instance to avoid cluttering scene
-                UnityEngine.Object.DestroyImmediate(tempInstance);
+                // CRITICAL: Always unload prefab contents to release memory
+                PrefabUtility.UnloadPrefabContents(prefabContents);
             }
         }
 

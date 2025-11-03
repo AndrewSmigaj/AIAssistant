@@ -77,11 +77,6 @@ namespace ContextAwareSceneBuilder.Editor
             sysSb.AppendLine("   - Apply deterministic offset search to resolve overlaps");
             sysSb.AppendLine("   - Preserve vertical alignment (all items at same Y = surface.top)");
             sysSb.AppendLine();
-            sysSb.AppendLine("3. Use staged creation for surface dependencies:");
-            sysSb.AppendLine("   - Stage 1: Create target surface (table), retrieve its slsAdapters from output");
-            sysSb.AppendLine("   - Stage 2: Place children (lamp, mug) using target's scene-context semantic points");
-            sysSb.AppendLine("   - DO NOT place children using guesses of target's pivot/rotation");
-            sysSb.AppendLine();
             sysSb.AppendLine("4. If collision cannot be resolved within surface bounds:");
             sysSb.AppendLine("   - PAUSE and ask user: 'Cannot place [object] on [surface] without overlap.'");
             sysSb.AppendLine("   - Offer options: (1) enlarge surface, (2) remove existing items, (3) allow overlap");

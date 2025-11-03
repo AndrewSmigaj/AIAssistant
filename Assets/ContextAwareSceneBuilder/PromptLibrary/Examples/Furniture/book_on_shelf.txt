@@ -258,10 +258,11 @@ KEY TAKEAWAYS:
    - Simplifies calculations but still use SLS workflow
    - Always check R_ls in catalog - don't assume identity!
 
-4. Staged creation:
-   - Stage 1: Create shelf, get its p_wl and R_wl from output
-   - Stage 2: Calculate shelf.top_world using instance transform
-   - Stage 3: Place book using shelf.top_world as target
+4. Batch creation (shelf + book in single operation):
+   - Calculate shelf's world transform (position + rotation)
+   - Calculate shelf.top_world using shelf's transform: p_wl + R_ws * (S ⊙ top_sls)
+   - Calculate book's world transform using shelf.top_world
+   - Create BOTH shelf and book in single batch - no waiting for scene re-index
 
 5. Verification ensures correctness:
    - shelf.back_world.z = wall.front_world.z (flush to wall)
