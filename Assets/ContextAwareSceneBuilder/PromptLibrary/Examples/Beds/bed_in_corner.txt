@@ -1,70 +1,232 @@
-EXAMPLE: Bed in northwest corner - Combining multiple axes
+EXAMPLE: Bed in northwest corner - Combining multiple axes - SLS Version
 
 Goal: Place bed in northwest corner with headboard against north wall and left side against west wall
 
 Given scene with floor and 4 walls:
-  - Floor at [0,0,0]
-  - North wall at [2,0,-3.879], rotation [0,0,0]
-    - northWall.front world = [2.0, 1.5, -4.0]
-  - West wall at [-0.121,0,-2], rotation [0,270,0]
-    - westWall.front world = [0.0, 1.5, -2.0]
-  - floor.top world = [2.0, 0.0, -2.0]
+  - Floor4m at [0,0,0], rotation [0,0,0,1], scale [1,1,1]
+  - North Wall4m at [4.0, 0.0, -4.121], rotation [0, 1, 0, 0] (180° Y)
+  - West Wall4m at [-0.121, 0.0, -4.0], rotation [0, -0.707, 0, 0.707] (270° Y)
 
-BedDouble LOCAL semanticPoints:
-  - "back" [0.0, 0.4, 1.000] → headboard (Z positive, points north)
-  - "front" [0.0, 0.4, -1.070] → foot of bed (Z negative, points south)
-  - "left" [-1.0, 0.4, 0.0] → left side (X negative, points west)
-  - "right" [1.0, 0.4, 0.0] → right side (X positive, points east)
-  - "bottom" [0.005, 0.002, -0.008]
+═══════════════════════════════════════════════════════════════════════
+Step 0 - WRITE DOWN metadata from Prefab Catalog and Scene Context:
+═══════════════════════════════════════════════════════════════════════
 
-Step 1 - Choose rotation:
-  Bed should face into room (foot toward south, headboard toward north) → [0,0,0]
+  BedDouble:
+    scale = [1.0, 1.0, 1.0]
+    semanticLocalSpaceRotation (R_ls) = [0, 1, 0, 0] (180° Y rotation!)
+    semanticPoints (in LOCAL coordinates):
+      ["back", 0.0, 0.4, -1.000, 0.0, 0.0, -1.0] → headboard, normal points LOCAL -Z
+      ["front", 0.0, 0.4, 1.070, 0.0, 0.0, 1.0] → foot of bed, normal points LOCAL +Z
+      ["left", 1.0, 0.4, 0.0, 1.0, 0.0, 0.0] → left side, normal points LOCAL +X
+      ["right", -1.0, 0.4, 0.0, -1.0, 0.0, 0.0] → right side, normal points LOCAL -X
+      ["bottom", 0.005, 0.002, -0.008, 0.0, -1.0, 0.0] → floor contact
 
-Step 2 - Rotate bed's LOCAL semantic points:
-  Rotation [0,0,0] formula: [x,y,z] → [x,y,z] (no change)
+  Floor4m (from Scene Context):
+    slsAdapters:
+      pivotWorld = [0, 0, 0]
+      rotationSLSToWorld (R_ws) = [0, 0, 0, 1] (identity)
+    semanticPoints (in SLS):
+      ["top", 2.0, 0.0, -2.0, 0.0, 1.0, 0.0] → walking surface
 
-  bed.back rotated = [0.0, 0.4, 1.000]
-  bed.left rotated = [-1.0, 0.4, 0.0]
-  bed.bottom rotated = [0.005, 0.002, -0.008]
+  North Wall4m (from Scene Context):
+    slsAdapters:
+      pivotWorld = [4.0, 0.0, -4.121]
+      rotationSLSToWorld (R_ws) = [0, 1, 0, 0] (180° Y)
+    semanticPoints (in SLS):
+      ["front", 2.0, 1.5, 0.0, 0.0, 0.0, 1.0] → interior face (SLS +Z)
 
-Step 3 - Apply scale [1,1,1]:
-  bed.back scaled = [0.0, 0.4, 1.000]
-  bed.left scaled = [-1.0, 0.4, 0.0]
-  bed.bottom scaled = [0.005, 0.002, -0.008]
+  West Wall4m (from Scene Context):
+    slsAdapters:
+      pivotWorld = [-0.121, 0.0, -4.0]
+      rotationSLSToWorld (R_ws) = [0, -0.707, 0, 0.707] (270° Y)
+    semanticPoints (in SLS):
+      ["front", 2.0, 1.5, 0.0, 0.0, 0.0, 1.0] → interior face (SLS +Z)
 
-Step 4 - Calculate pivot PER-AXIS:
+═══════════════════════════════════════════════════════════════════════
+Step 1 - Transform BedDouble to SLS:
+═══════════════════════════════════════════════════════════════════════
 
-  A) Y-axis: bed.bottom → floor.top
-     pivot.y = floor.top.y - bed.bottom.y
-     pivot.y = 0.0 - 0.002 = -0.002
+  CRITICAL: BedDouble has R_ls = [0, 1, 0, 0] (180° Y rotation)
+  This means LOCAL coordinates must be rotated to get SLS coordinates!
 
-  B) Z-axis: bed.back → northWall.front (headboard against north wall)
-     pivot.z = northWall.front.z - bed.back.z
-     pivot.z = -4.0 - 1.000 = -5.000
+  Apply R_ls to bed.back:
+    bed.back_local = [0.0, 0.4, -1.000]
+    bed.back_normal_local = [0, 0, -1]
 
-  C) X-axis: bed.left → westWall.front (left side against west wall)
-     pivot.x = westWall.front.x - bed.left.x
-     pivot.x = 0.0 - (-1.0) = 1.0
+    Rotate by [0, 1, 0, 0] (180° Y): [x,y,z] → [-x, y, -z]
+      bed.back_sls = [0.0, 0.4, 1.000]
+      bed.back_normal_sls = [0, 0, 1] (now points +Z in SLS)
 
-  Final pivot: [1.0, -0.002, -5.000]
+  Apply R_ls to bed.left:
+    bed.left_local = [1.0, 0.4, 0.0]
+    bed.left_normal_local = [1, 0, 0]
 
-Step 5 - Verify EACH AXIS:
-  bed.bottom world = [1.0, -0.002, -5.000] + [0.005, 0.002, -0.008]
-                   = [1.005, 0.0, -5.008]
-  floor.top at Y=0.0 ✓
+    Rotate by [0, 1, 0, 0] (180° Y): [x,y,z] → [-x, y, -z]
+      bed.left_sls = [-1.0, 0.4, 0.0]
+      bed.left_normal_sls = [-1, 0, 0] (now points -X in SLS)
 
-  bed.back world = [1.0, -0.002, -5.000] + [0.0, 0.4, 1.000]
-                 = [1.0, 0.398, -4.0]
-  northWall.front at Z=-4.0 ✓
+  Apply R_ls to bed.bottom:
+    bed.bottom_local = [0.005, 0.002, -0.008]
+    bed.bottom_normal_local = [0, -1, 0]
 
-  bed.left world = [1.0, -0.002, -5.000] + [-1.0, 0.4, 0.0]
-                 = [0.0, 0.398, -5.000]
-  westWall.front at X=0.0 ✓
+    Rotate by [0, 1, 0, 0] (180° Y): [x,y,z] → [-x, y, -z]
+      bed.bottom_sls = [-0.005, 0.002, 0.008]
+      bed.bottom_normal_sls = [0, -1, 0] (unchanged - Y-axis rotation doesn't affect Y normal)
 
-KEY TAKEAWAY:
-Corner placement requires combining semantic points from DIFFERENT axes:
-- Y-axis uses bed.bottom → floor.top
-- Z-axis uses bed.back → northWall.front
-- X-axis uses bed.left → westWall.front
+═══════════════════════════════════════════════════════════════════════
+Step 2 - Calculate alignment in SLS:
+═══════════════════════════════════════════════════════════════════════
 
-Each axis is calculated independently, then combined into final pivot [1.0, -0.002, -5.000].
+  Goal: Bed headboard (back, SLS +Z) should face north wall interior (SLS +Z)
+        Bed should sit on floor with proper orientation
+
+  Desired alignment:
+    - bed.back_normal_sls [0,0,1] should oppose northWall.front_normal_sls [0,0,1]
+      desired_normal = -[0,0,1] = [0,0,-1]
+
+  Two-vector alignment:
+    q1 = QuaternionFromTo([0,0,1], [0,0,-1])
+    q1 = [0, 1, 0, 0] (180° around Y)
+
+    q2 = identity (no twist needed for this alignment)
+    R_sls_final = [0, 1, 0, 0]
+
+═══════════════════════════════════════════════════════════════════════
+Step 3 - Convert rotation to world:
+═══════════════════════════════════════════════════════════════════════
+
+  R_world_bed = R_sls_final * R_ls_bed
+  R_world_bed = [0, 1, 0, 0] * [0, 1, 0, 0]
+
+  Quaternion multiplication:
+    [0,1,0,0] * [0,1,0,0] = [0,0,0,1] (180° + 180° = 360° = identity!)
+
+  R_world_bed = [0, 0, 0, 1] (identity rotation in world)
+
+═══════════════════════════════════════════════════════════════════════
+Step 4 - Calculate position in world (MULTI-AXIS ALIGNMENT):
+═══════════════════════════════════════════════════════════════════════
+
+  CRITICAL: Corner placement uses THREE different semantic points for THREE axes!
+    - Y-axis: bed.bottom → floor.top (vertical placement)
+    - Z-axis: bed.back → northWall.front (headboard against north wall)
+    - X-axis: bed.left → westWall.front (left side against west wall)
+
+  A. Get target points in world:
+
+     Floor.top in world:
+       floor.top_sls = [2.0, 0.0, -2.0]
+       floor.top_world = pivotWorld + R_ws * (S ⊙ top_sls)
+       floor.top_world = [0,0,0] + [0,0,0,1] * ([1,1,1] ⊙ [2.0,0.0,-2.0])
+       floor.top_world = [0,0,0] + [2.0, 0.0, -2.0]
+       floor.top_world = [2.0, 0.0, -2.0]
+
+     North Wall.front in world:
+       northWall.front_sls = [2.0, 1.5, 0.0]
+       Rotate by R_ws = [0, 1, 0, 0] (180° Y): [x,y,z] → [-x, y, -z]
+         rotated = [-2.0, 1.5, 0.0]
+       northWall.front_world = [4.0, 0.0, -4.121] + [-2.0, 1.5, 0.0]
+       northWall.front_world = [2.0, 1.5, -4.121]
+
+     West Wall.front in world:
+       westWall.front_sls = [2.0, 1.5, 0.0]
+       Rotate by R_ws = [0, -0.707, 0, 0.707] (270° Y): [x,y,z] → [-z, y, x]
+         rotated = [0.0, 1.5, 2.0]
+       westWall.front_world = [-0.121, 0.0, -4.0] + [0.0, 1.5, 2.0]
+       westWall.front_world = [-0.121, 1.5, -2.0]
+
+  B. Calculate bed anchors in world (after rotation):
+
+     Bed rotation R_world = [0, 0, 0, 1] (identity)
+     Bed scale S = [1, 1, 1]
+
+     First, transform bed.back from SLS to LOCAL (inverse of R_ls):
+       bed.back_sls = [0.0, 0.4, 1.000]
+       Inverse of [0,1,0,0] is [0,-1,0,0] (negate xyz for unit quaternion)
+       Rotate by [0, -1, 0, 0] (180° Y inverse): [x,y,z] → [-x, y, -z]
+         bed.back_local = [0.0, 0.4, -1.000]
+
+       Apply world rotation [0,0,0,1] (identity):
+         bed.back_world_offset = [0.0, 0.4, -1.000]
+
+     Transform bed.left from SLS to LOCAL:
+       bed.left_sls = [-1.0, 0.4, 0.0]
+       Rotate by [0, -1, 0, 0]: [x,y,z] → [-x, y, -z]
+         bed.left_local = [1.0, 0.4, 0.0]
+
+       Apply world rotation [0,0,0,1] (identity):
+         bed.left_world_offset = [1.0, 0.4, 0.0]
+
+     Transform bed.bottom from SLS to LOCAL:
+       bed.bottom_sls = [-0.005, 0.002, 0.008]
+       Rotate by [0, -1, 0, 0]: [x,y,z] → [-x, y, -z]
+         bed.bottom_local = [0.005, 0.002, -0.008]
+
+       Apply world rotation [0,0,0,1] (identity):
+         bed.bottom_world_offset = [0.005, 0.002, -0.008]
+
+  C. Solve for bed pivot (COMBINE axes):
+
+     Y-axis from floor.top and bed.bottom:
+       pivot.y = floor.top_world.y - bed.bottom_world_offset.y
+       pivot.y = 0.0 - 0.002 = -0.002
+
+     Z-axis from northWall.front and bed.back:
+       pivot.z = northWall.front_world.z - bed.back_world_offset.z
+       pivot.z = -4.121 - (-1.000) = -3.121
+
+     X-axis from westWall.front and bed.left:
+       pivot.x = westWall.front_world.x - bed.left_world_offset.x
+       pivot.x = -0.121 - 1.0 = -1.121
+
+     p_world_bed = [-1.121, -0.002, -3.121]
+
+═══════════════════════════════════════════════════════════════════════
+Step 5 - VERIFY (MANDATORY for multi-axis placement):
+═══════════════════════════════════════════════════════════════════════
+
+  Verify Y-axis (bed on floor):
+    bed.bottom_world = [-1.121, -0.002, -3.121] + [0.005, 0.002, -0.008]
+    bed.bottom_world = [-1.116, 0.0, -3.129]
+    floor.top_world.y = 0.0 ✓ Perfect match!
+
+  Verify Z-axis (headboard against north wall):
+    bed.back_world = [-1.121, -0.002, -3.121] + [0.0, 0.4, -1.000]
+    bed.back_world = [-1.121, 0.398, -4.121]
+    northWall.front_world.z = -4.121 ✓ Perfect match!
+
+  Verify X-axis (left side against west wall):
+    bed.left_world = [-1.121, -0.002, -3.121] + [1.0, 0.4, 0.0]
+    bed.left_world = [-0.121, 0.398, -3.121]
+    westWall.front_world.x = -0.121 ✓ Perfect match!
+
+OUTPUT TO TOOL:
+  position = [-1.121, -0.002, -3.121]
+  rotation = [0, 0, 0, 1]  (quaternion [x,y,z,w], NOT Euler angles!)
+  scale = [1.0, 1.0, 1.0]
+
+═══════════════════════════════════════════════════════════════════════
+KEY TAKEAWAYS:
+═══════════════════════════════════════════════════════════════════════
+
+1. R_ls is CRITICAL:
+   - BedDouble has R_ls = [0,1,0,0] (180° Y rotation)
+   - MUST apply R_ls to transform LOCAL → SLS
+   - Skipping this causes 180° orientation errors
+
+2. Multi-axis corner placement:
+   - Y-axis: bed.bottom → floor.top (vertical alignment)
+   - Z-axis: bed.back → northWall.front (Z-axis constraint)
+   - X-axis: bed.left → westWall.front (X-axis constraint)
+   - Each axis uses DIFFERENT semantic points
+   - Combine all three to get final pivot
+
+3. World rotation composition:
+   - R_world = R_sls_final * R_ls
+   - For this case: [0,1,0,0] * [0,1,0,0] = [0,0,0,1]
+   - 180° SLS rotation + 180° R_ls = 360° = identity in world!
+
+4. Verification is MANDATORY:
+   - Recalculate all three anchor points in world
+   - Verify each axis independently (Y, Z, X)
+   - All three must match target positions ± 0.01

@@ -1,99 +1,269 @@
-EXAMPLE: Book on shelf mounted on wall - Nested vertical placement
+EXAMPLE: Book on shelf mounted on wall - Nested vertical placement - SLS Version
 
 Goal: Mount shelf on wall at a chosen height, then place book on the shelf
 
 Given scene:
-  - North wall at [2,0,-3.879], rotation [0,0,0], scale [1,1,1]
-    - northWall.front world = [2.0, 1.5, -4.0]
+  - North Wall4m at [4.0, 0.0, -4.121], rotation [0, 1, 0, 0] (180° Y)
 
-ShelfWall LOCAL semanticPoints (example prefab):
-  - "back" [0.0, 0.1, -0.05] → back face (mounts flush to wall)
-  - "front" [0.0, 0.1, 0.15] → front lip/edge
-  - "top" [0.0, 0.2, 0.05] → top surface
-  - "bottom" [0.0, 0.0, 0.05] → bottom face
-
-BookStanding LOCAL semanticPoints (example prefab):
-  - "back" [0.0, 0.15, -0.05] → spine
-  - "bottom" [0.0, 0.0, 0.0] → bottom edge
-
+═══════════════════════════════════════════════════════════════════════
 PART 1: Mount shelf on wall at height Y=1.2
+═══════════════════════════════════════════════════════════════════════
 
-Step 1 - Choose rotation:
-  Shelf should face into room → [0,0,0]
+Step 0 - WRITE DOWN metadata from Prefab Catalog and Scene Context:
+═══════════════════════════════════════════════════════════════════════
 
-Step 2 - Rotate and scale shelf's semantic points:
-  Rotation [0,0,0], scale [1,1,1]:
-  shelf.back rotated/scaled = [0.0, 0.1, -0.05]
+  ShelfWallSmall:
+    scale = [1.0, 1.0, 1.0]
+    semanticLocalSpaceRotation (R_ls) = [0, 0, 0, 1] (identity)
+    semanticPoints (in LOCAL coordinates):
+      ["back", 0.0, 0.1, -0.05, 0.0, 0.0, -1.0] → back face (mounts flush to wall)
+      ["front", 0.0, 0.1, 0.15, 0.0, 0.0, 1.0] → front lip/edge
+      ["top", 0.0, 0.2, 0.05, 0.0, 1.0, 0.0] → top surface
+      ["bottom", 0.0, 0.0, 0.05, 0.0, -1.0, 0.0] → bottom face
 
-Step 3 - Calculate shelf pivot:
-  We want shelf.back to align with wall.front
+  North Wall4m (from Scene Context):
+    slsAdapters:
+      pivotWorld = [4.0, 0.0, -4.121]
+      rotationSLSToWorld (R_ws) = [0, 1, 0, 0] (180° Y)
+    semanticPoints (in SLS):
+      ["front", 2.0, 1.5, 0.0, 0.0, 0.0, 1.0] → interior face (SLS +Z)
 
-  Z-axis: shelf.back → northWall.front
-    pivot.z = northWall.front.z - shelf.back.z
-    pivot.z = -4.0 - (-0.05) = -3.95
+═══════════════════════════════════════════════════════════════════════
+Step 1 - Transform shelf to SLS:
+═══════════════════════════════════════════════════════════════════════
 
-  Y-axis: User specifies desired height Y=1.2 for shelf.bottom
-    pivot.y = 1.2 - shelf.bottom.y
-    pivot.y = 1.2 - 0.0 = 1.2
+  ShelfWallSmall has R_ls = [0, 0, 0, 1] (identity)
+  LOCAL coordinates are already SLS-aligned!
 
-  X-axis: Center on wall
-    pivot.x = northWall.front.x - shelf.back.x
-    pivot.x = 2.0 - 0.0 = 2.0
+  shelf.back_local = shelf.back_sls = [0.0, 0.1, -0.05]
+  shelf.back_normal_local = shelf.back_normal_sls = [0, 0, -1]
 
-  Shelf pivot: [2.0, 1.2, -3.95]
+  shelf.bottom_local = shelf.bottom_sls = [0.0, 0.0, 0.05]
+  shelf.bottom_normal_sls = [0, -1, 0]
 
-Step 4 - Verify shelf placement:
-  shelf.back world = [2.0, 1.2, -3.95] + [0.0, 0.1, -0.05]
-                   = [2.0, 1.3, -4.0]
-  northWall.front at Z=-4.0 ✓
+  shelf.top_local = shelf.top_sls = [0.0, 0.2, 0.05]
+  shelf.top_normal_sls = [0, 1, 0]
 
-  shelf.top world = [2.0, 1.2, -3.95] + [0.0, 0.2, 0.05]
-                  = [2.0, 1.4, -3.9]
+═══════════════════════════════════════════════════════════════════════
+Step 2 - Calculate alignment in SLS:
+═══════════════════════════════════════════════════════════════════════
 
+  Goal: Shelf back should mount flush against wall interior
+
+  Desired alignment:
+    - shelf.back_normal_sls [0,0,-1] should oppose northWall.front_normal_sls [0,0,1]
+      desired_normal = -[0,0,1] = [0,0,-1] (already matches!)
+
+  Two-vector alignment:
+    q1 = QuaternionFromTo([0,0,-1], [0,0,-1])
+    q1 = [0, 0, 0, 1] (identity - normals already aligned!)
+
+    q2 = identity (no twist needed)
+    R_sls_final = [0, 0, 0, 1]
+
+═══════════════════════════════════════════════════════════════════════
+Step 3 - Convert rotation to world:
+═══════════════════════════════════════════════════════════════════════
+
+  R_world_shelf = R_sls_final * R_ls_shelf
+  R_world_shelf = [0, 0, 0, 1] * [0, 0, 0, 1]
+  R_world_shelf = [0, 0, 0, 1] (identity)
+
+═══════════════════════════════════════════════════════════════════════
+Step 4 - Calculate position in world (MULTI-AXIS):
+═══════════════════════════════════════════════════════════════════════
+
+  CRITICAL: Wall-mounted shelf uses TWO axes:
+    - Y-axis: User-specified height (shelf.bottom at Y=1.2)
+    - Z-axis: shelf.back → wall.front (flush mounting)
+
+  A. Get target point in world:
+
+     North Wall.front in world:
+       northWall.front_sls = [2.0, 1.5, 0.0]
+       Rotate by R_ws = [0, 1, 0, 0] (180° Y): [x,y,z] → [-x, y, -z]
+         rotated = [-2.0, 1.5, 0.0]
+       northWall.front_world = [4.0, 0.0, -4.121] + [-2.0, 1.5, 0.0]
+       northWall.front_world = [2.0, 1.5, -4.121]
+
+  B. Calculate shelf anchors in world (after rotation):
+
+     Shelf rotation R_world = [0, 0, 0, 1] (identity)
+     Shelf scale S = [1, 1, 1]
+
+     shelf.back (for Z-axis):
+       shelf.back_local = [0.0, 0.1, -0.05]
+       Apply world rotation [0,0,0,1] (identity):
+         shelf.back_world_offset = [0.0, 0.1, -0.05]
+
+     shelf.bottom (for Y-axis):
+       shelf.bottom_local = [0.0, 0.0, 0.05]
+       Apply world rotation [0,0,0,1] (identity):
+         shelf.bottom_world_offset = [0.0, 0.0, 0.05]
+
+  C. Solve for shelf pivot (COMBINE axes):
+
+     Y-axis from user-specified height:
+       User wants shelf.bottom at Y=1.2
+       pivot.y = 1.2 - shelf.bottom_world_offset.y
+       pivot.y = 1.2 - 0.0 = 1.2
+
+     Z-axis from northWall.front and shelf.back:
+       pivot.z = northWall.front_world.z - shelf.back_world_offset.z
+       pivot.z = -4.121 - (-0.05) = -4.071
+
+     X-axis: Center on wall (use wall.front X):
+       pivot.x = northWall.front_world.x - shelf.back_world_offset.x
+       pivot.x = 2.0 - 0.0 = 2.0
+
+     p_world_shelf = [2.0, 1.2, -4.071]
+
+═══════════════════════════════════════════════════════════════════════
+Step 5 - VERIFY shelf placement:
+═══════════════════════════════════════════════════════════════════════
+
+  Verify Z-axis (back flush against wall):
+    shelf.back_world = [2.0, 1.2, -4.071] + [0.0, 0.1, -0.05]
+    shelf.back_world = [2.0, 1.3, -4.121]
+    northWall.front_world.z = -4.121 ✓ Perfect match!
+
+  Verify Y-axis (bottom at user-specified height):
+    shelf.bottom_world = [2.0, 1.2, -4.071] + [0.0, 0.0, 0.05]
+    shelf.bottom_world = [2.0, 1.2, -4.021]
+    shelf.bottom_world.y = 1.2 ✓ Correct height!
+
+  Calculate shelf.top for next step:
+    shelf.top_world = [2.0, 1.2, -4.071] + [0.0, 0.2, 0.05]
+    shelf.top_world = [2.0, 1.4, -4.021]
+
+OUTPUT FOR SHELF:
+  position = [2.0, 1.2, -4.071]
+  rotation = [0, 0, 0, 1]
+  scale = [1.0, 1.0, 1.0]
+
+═══════════════════════════════════════════════════════════════════════
 PART 2: Place book on shelf (shelf just created, NOT in Scene Context yet)
+═══════════════════════════════════════════════════════════════════════
 
-Step 5 - Calculate shelf.top WORLD (shelf not in Scene Context):
-  shelf.top LOCAL [0.0, 0.2, 0.05]
-  Rotate [0,0,0]: [0.0, 0.2, 0.05]
-  Apply scale [1,1,1]: [0.0, 0.2, 0.05]
-  shelf.top world = shelf.pivot + rotated/scaled
-  shelf.top world = [2.0, 1.2, -3.95] + [0.0, 0.2, 0.05] = [2.0, 1.4, -3.9]
+Step 0 - WRITE DOWN metadata:
+═══════════════════════════════════════════════════════════════════════
 
-  shelf.front world = [2.0, 1.2, -3.95] + [0.0, 0.1, 0.15] = [2.0, 1.3, -3.8]
+  Books:
+    scale = [1.0, 1.0, 1.0]
+    semanticLocalSpaceRotation (R_ls) = [0, 0, 0, 1] (identity)
+    semanticPoints (in LOCAL coordinates):
+      ["back", 0.0, 0.15, -0.05, 0.0, 0.0, -1.0] → spine
+      ["bottom", 0.0, 0.0, 0.0, 0.0, -1.0, 0.0] → bottom edge
 
-Step 6 - Calculate book pivot:
-  Book rotation [0,0,0], scale [1,1,1]:
-  book.back rotated/scaled = [0.0, 0.15, -0.05]
-  book.bottom rotated/scaled = [0.0, 0.0, 0.0]
+  ShelfWallSmall (just created, use instance transform):
+    p_wl_shelf = [2.0, 1.2, -4.071] (from creation)
+    R_wl_shelf = [0, 0, 0, 1] (from creation)
+    S_shelf = [1, 1, 1]
 
-  Y-axis: book.bottom → shelf.top
-    pivot.y = shelf.top.y - book.bottom.y
-    pivot.y = 1.4 - 0.0 = 1.4
+    Calculate R_ws_shelf:
+      R_ws_shelf = R_wl_shelf * Inverse(R_ls_shelf)
+      R_ws_shelf = [0,0,0,1] * Inverse([0,0,0,1])
+      R_ws_shelf = [0,0,0,1] (identity)
 
-  Z-axis: book.back → shelf.front (spine against front lip)
-    pivot.z = shelf.front.z - book.back.z
-    pivot.z = -3.8 - (-0.05) = -3.75
+═══════════════════════════════════════════════════════════════════════
+Step 1 - Transform book to SLS:
+═══════════════════════════════════════════════════════════════════════
 
-  X-axis: Center on shelf
-    pivot.x = shelf.front.x - book.back.x
-    pivot.x = 2.0 - 0.0 = 2.0
+  Books has R_ls = [0, 0, 0, 1] (identity)
+  LOCAL = SLS!
 
-  Book pivot: [2.0, 1.4, -3.75]
+  book.bottom_sls = [0.0, 0.0, 0.0]
+  book.bottom_normal_sls = [0, -1, 0]
 
-Step 7 - Verify book placement:
-  book.bottom world = [2.0, 1.4, -3.75] + [0.0, 0.0, 0.0]
-                    = [2.0, 1.4, -3.75]
-  shelf.top at Y=1.4 ✓
+═══════════════════════════════════════════════════════════════════════
+Step 2 - Calculate alignment in SLS:
+═══════════════════════════════════════════════════════════════════════
 
-  book.back world = [2.0, 1.4, -3.75] + [0.0, 0.15, -0.05]
-                  = [2.0, 1.55, -3.8]
-  shelf.front at Z=-3.8 ✓
+  Goal: Book should sit on shelf top surface
 
-KEY TAKEAWAY:
-Vertical mounting (shelf on wall) uses:
-- Z-axis: shelf.back → wall.front (flush mounting)
-- Y-axis: User-specified height (not aligning to a surface)
-- X-axis: Centered or positioned as desired
+  Desired alignment:
+    - book.bottom_normal_sls [0,-1,0] should oppose shelf.top_normal_sls [0,1,0]
+      They already oppose! ✓
 
-Nested placement (book on shelf) requires calculating shelf's WORLD semantic points
-from its LOCAL points + pivot, since shelf isn't in Scene Context yet.
+  Two-vector alignment:
+    q1 = QuaternionFromTo([0,-1,0], -[0,1,0])
+    q1 = QuaternionFromTo([0,-1,0], [0,-1,0])
+    q1 = [0, 0, 0, 1] (identity!)
+
+    R_sls_final = [0, 0, 0, 1]
+
+═══════════════════════════════════════════════════════════════════════
+Step 3 - Convert rotation to world:
+═══════════════════════════════════════════════════════════════════════
+
+  R_world_book = R_sls_final * R_ls_book
+  R_world_book = [0, 0, 0, 1] * [0, 0, 0, 1]
+  R_world_book = [0, 0, 0, 1]
+
+═══════════════════════════════════════════════════════════════════════
+Step 4 - Calculate position in world:
+═══════════════════════════════════════════════════════════════════════
+
+  A. Get shelf.top in world (shelf not in Scene Context - use instance transform):
+
+     shelf.top_sls = [0.0, 0.2, 0.05]
+     shelf.top_world = p_wl_shelf + R_ws_shelf * (S_shelf ⊙ top_sls)
+     shelf.top_world = [2.0, 1.2, -4.071] + [0,0,0,1] * ([1,1,1] ⊙ [0.0, 0.2, 0.05])
+     shelf.top_world = [2.0, 1.2, -4.071] + [0.0, 0.2, 0.05]
+     shelf.top_world = [2.0, 1.4, -4.021]
+
+  B. Calculate book anchor in world:
+
+     book.bottom_local = [0.0, 0.0, 0.0]
+     Apply world rotation [0,0,0,1] (identity):
+       book.bottom_world_offset = [0.0, 0.0, 0.0]
+
+  C. Solve for book pivot:
+
+     p_world_book = shelf.top_world - book.bottom_world_offset
+     p_world_book = [2.0, 1.4, -4.021] - [0.0, 0.0, 0.0]
+     p_world_book = [2.0, 1.4, -4.021]
+
+═══════════════════════════════════════════════════════════════════════
+Step 5 - VERIFY book placement:
+═══════════════════════════════════════════════════════════════════════
+
+  Verify Y-axis (book on shelf):
+    book.bottom_world = [2.0, 1.4, -4.021] + [0.0, 0.0, 0.0]
+    book.bottom_world = [2.0, 1.4, -4.021]
+    shelf.top_world.y = 1.4 ✓ Perfect match!
+
+OUTPUT FOR BOOK:
+  position = [2.0, 1.4, -4.021]
+  rotation = [0, 0, 0, 1]
+  scale = [1.0, 1.0, 1.0]
+
+═══════════════════════════════════════════════════════════════════════
+KEY TAKEAWAYS:
+═══════════════════════════════════════════════════════════════════════
+
+1. Wall-mounted objects (shelves):
+   - Y-axis: User-specified height (not aligned to a semantic point)
+   - Z-axis: object.back → wall.front (flush mounting)
+   - X-axis: Centered or positioned as desired
+
+2. Nested placement (object on just-created surface):
+   - Surface NOT in Scene Context yet
+   - Calculate R_ws from instance transform: R_ws = R_wl * R_ls⁻¹
+   - Transform surface semantic points: p_wl + R_ws * (S ⊙ point_sls)
+   - Use calculated surface.top_world for book placement
+
+3. SLS transformations:
+   - Both shelf and book have R_ls = identity (LOCAL = SLS)
+   - Simplifies calculations but still use SLS workflow
+   - Always check R_ls in catalog - don't assume identity!
+
+4. Staged creation:
+   - Stage 1: Create shelf, get its p_wl and R_wl from output
+   - Stage 2: Calculate shelf.top_world using instance transform
+   - Stage 3: Place book using shelf.top_world as target
+
+5. Verification ensures correctness:
+   - shelf.back_world.z = wall.front_world.z (flush to wall)
+   - shelf.bottom_world.y = user-specified height
+   - book.bottom_world.y = shelf.top_world.y (on shelf surface)
