@@ -1,929 +1,723 @@
-architecture: Unified AI Assistant Window with Mode Switching
-version: 2.0.0
+architecture: Unified AI Assistant Window with Three-Column Layout
+version: 3.0.0
 status: design_ready_for_implementation
 purpose: |
-  Extend AIAssistantWindow to support three modes in a single unified interface:
-  1. Scene Builder (existing) - Natural language scene building
-  2. Example Builder (new) - Iterative prompt library example creation
-  3. Prompt Library (new) - Browse and enable/disable prompt library examples
+  Transform AIAssistantWindow into a three-column layout with:
+  - Left: AI Conversation (shared across all workflows)
+  - Middle: Prompt Library Browser (always visible, collapsible)
+  - Right: Preview/Edit Pane
 
-  All modes share the same chat-style interface with mode-specific behaviors.
-  Uses dictionary-based state isolation to prevent conversation interference.
+  Supports two operational modes:
+  1. Scene Builder Mode (default) - Natural language scene building
+  2. Example Mode (temporary) - Create/refine prompt library examples
+
+  All system instructions moved from hardcoded ContextBuilder to prompt files.
 
 design_principles:
-  - Single unified window: No separate windows, everything accessible via mode switcher
-  - Reuse existing UI: Chat log, prompt input, header toolbar all reused across modes
-  - State isolation: Each mode has independent conversation history and response IDs
-  - Natural workflows: Conversational example refinement, chat-based scene building
-  - Minimal code duplication: Shared UI infrastructure, mode-specific rendering logic
+  - Single conversation: One chat log for all workflows (Scene Builder + Example Mode)
+  - Three-column layout: Conversation | Prompt Library | Preview (always visible)
+  - Modal Example Mode: Temporary workflow for creating examples, auto-exits on completion
+  - Prompt-based instructions: All system messages loaded from prompt library files
+  - State serialization: Unity 6 compatible serialization for domain reload survival
 
 overview: |
-  This architecture adds a mode switcher (segmented control) to AIAssistantWindow,
-  allowing users to switch between Scene Builder, Example Builder, and Prompt Library
-  without leaving the window.
+  This architecture replaces the hardcoded system message in ContextBuilder with
+  a flexible prompt library system, and adds a three-column UI for creating and
+  refining prompt examples through conversational AI interaction.
 
   Key Features:
-  - Mode switcher: Horizontal segmented control [Scene Builder][Example Builder][Prompt Library]
-  - State isolation: Each mode has separate conversation, logs, and response IDs
-  - Shared UI: Log area, prompt input, header toolbar reused with mode-aware rendering
-  - Context toggle: Checkbox to include/exclude scene & prefab data (for questions)
-  - Example Builder: Generate → Execute → Diagnose → Save workflow in chat interface
-  - Prompt Library: Embedded tree view (30%) + preview pane (70%)
+  - Three columns: Conversation (40%) | Prompt Library (30%) | Preview (30%)
+  - Prompt Library always visible with enable/disable checkboxes
+  - "Create New Example" and "Refine Selected" buttons
+  - Example Mode: Temporary workflow (enter → work → save → exit)
+  - Context toggles: Send scene / Send prefab catalog checkboxes
+  - All instructions in .txt files (user-editable)
 
 components:
 
   # ============================================================================
-  # 1. MODE SWITCHING INFRASTRUCTURE
+  # 1. THREE-COLUMN LAYOUT STRUCTURE
   # ============================================================================
 
-  mode_switching:
+  layout_structure:
+    overview: |
+      ┌──────────────────┬──────────────────┬──────────────────┐
+      │  CONVERSATION    │  PROMPT LIBRARY  │  PREVIEW / EDIT  │
+      │  (40% width)     │  (30% width)     │  (30% width)     │
+      ├──────────────────┼──────────────────┼──────────────────┤
+      │                  │                  │                  │
+      │  Chat Log        │  Tree View       │  Selected Prompt │
+      │  (scrollable)    │  ☑ Core/         │  Content         │
+      │                  │    ☑ basic_...   │  (read-only)     │
+      │  [User Input]    │    ☑ sls_det...  │                  │
+      │  [Submit]        │  ☑ Examples/     │  OR              │
+      │                  │    ☑ Furniture/  │                  │
+      │  Settings:       │  ──────────────  │  Example Being   │
+      │  ☐ Send scene    │  New Example:    │  Worked On       │
+      │  ☐ Send prefabs  │  [name____]      │  (in Example     │
+      │                  │  [Create New]    │   Mode)          │
+      │  [Exit Example   │  [Refine Sel]    │                  │
+      │   Mode] (grey)   │                  │                  │
+      │                  │                  │                  │
+      └──────────────────┴──────────────────┴──────────────────┘
+
+    left_column:
+      width: 40%
+      components:
+        - Chat log (scrollable conversation history)
+        - Prompt input field (60px height)
+        - Submit button (Ctrl+Enter shortcut)
+        - Settings section:
+            - "Send scene context" checkbox
+            - "Send prefab catalog" checkbox
+        - "Exit Example Mode" button (greyed out when in Scene Builder mode)
+
+    middle_column:
+      width: 30%
+      components:
+        - Tree view (70% of column height):
+            - Folder hierarchy with checkboxes
+            - Enable/disable prompts
+            - Select for preview
+        - Bottom section (30% of column height):
+            - Text field for new example name
+            - "Create New Example" button
+            - "Refine Selected Example" button (disabled if no selection)
+
+    right_column:
+      width: 30%
+      components:
+        - Preview pane (read-only TEXT display of prompt file contents)
+        - Shows selected prompt content from tree
+        - OR shows example being worked on (in Example Mode)
+        - NOTE: This is NOT Unity scene/prefab preview - just text content
+
+  # ============================================================================
+  # 2. MODE SYSTEM (TEMPORARY EXAMPLE MODE)
+  # ============================================================================
+
+  mode_system:
     enum_definition: |
       public enum WindowMode
       {
-          SceneBuilder,   // Natural language scene building (existing)
-          ExampleBuilder, // Generate and refine prompt library examples
-          PromptLibrary   // Browse and enable/disable prompt library
+          SceneBuilder,
+          ExampleBuilder
       }
+
+    modes:
+      scene_builder:
+        description: Default mode for natural language scene building
+        persistent: true (always accessible)
+        conversation: Each mode maintains its own response ID and log
+
+      example_mode:
+        description: Temporary workflow for creating/refining examples
+        persistent: false (modal workflow)
+        entry_triggers:
+          - Click "Create New Example" button
+          - Click "Refine Selected Example" button
+        exit_triggers:
+          - Click "Exit Example Mode" button
+          - (Does NOT auto-exit on save - user can save multiple times)
+        conversation: Each mode maintains its own response ID and log
 
     state_management: |
-      // Current mode
-      private WindowMode _currentMode = WindowMode.SceneBuilder;
-
-      // Mode-specific state (isolated to prevent interference)
-      private Dictionary<WindowMode, string> _modeResponseIds = new Dictionary<WindowMode, string>();
-      private Dictionary<WindowMode, List<string>> _modeLogs = new Dictionary<WindowMode, List<string>>();
-      private Dictionary<WindowMode, string> _modePrompts = new Dictionary<WindowMode, string>();
-      private Dictionary<WindowMode, Vector2> _modeScrollPositions = new Dictionary<WindowMode, Vector2>();
-      private Dictionary<WindowMode, string> _modeLastMessages = new Dictionary<WindowMode, string>();
-
-      // Helper properties for cleaner code
-      private string CurrentResponseId
+      // Unity 6 serializable state (survives domain reload)
+      [System.Serializable]
+      public class ModeState
       {
-          get => _modeResponseIds.GetValueOrDefault(_currentMode);
-          set => _modeResponseIds[_currentMode] = value;
+          public WindowMode mode;
+          public string responseId;
+          public List<string> logs = new List<string>();
+          public string prompt = "";
+          public Vector2 scrollPosition;
       }
 
-      private List<string> CurrentLog
+      [SerializeField] private List<ModeState> _modeStates = new List<ModeState>();
+      [SerializeField] private bool _isExampleMode = false;
+      [SerializeField] private string _newExampleName = "";
+      [SerializeField] private string _selectedPromptPath = "";
+
+      // Helper properties with null safety
+      private ModeState CurrentState
       {
           get
           {
-              if (!_modeLogs.ContainsKey(_currentMode))
-                  _modeLogs[_currentMode] = new List<string>();
-              return _modeLogs[_currentMode];
+              var mode = _isExampleMode ? WindowMode.ExampleBuilder : WindowMode.SceneBuilder;
+              var state = _modeStates.Find(s => s.mode == mode);
+
+              if (state == null)
+              {
+                  Debug.LogError($"[AI Assistant] Mode state not found for {mode}. Reinitializing.");
+                  state = new ModeState { mode = mode };
+                  _modeStates.Add(state);
+              }
+
+              return state;
           }
       }
 
-      private string CurrentPrompt
+      private string CurrentResponseId
       {
-          get => _modePrompts.GetValueOrDefault(_currentMode, "");
-          set => _modePrompts[_currentMode] = value;
+          get => CurrentState?.responseId;
+          set { if (CurrentState != null) CurrentState.responseId = value; }
       }
 
-    mode_switcher_ui: |
-      void DisplayModeSelector()
+      private List<string> CurrentLog => CurrentState?.logs ?? new List<string>();
+
+    log_management: |
+      void AppendLog(string message, LogType type, Color color)
       {
-          // Segmented control style (Unity's miniButtonLeft/Mid/Right)
-          GUIStyle leftStyle = new GUIStyle(EditorStyles.miniButtonLeft);
-          GUIStyle middleStyle = new GUIStyle(EditorStyles.miniButtonMid);
-          GUIStyle rightStyle = new GUIStyle(EditorStyles.miniButtonRight);
+          string timestamp = DateTime.Now.ToString("HH:mm:ss");
+          CurrentLog.Add($"[{timestamp}] {message}");
 
-          // Highlight selected mode
-          if (_currentMode == WindowMode.SceneBuilder)
-              leftStyle.normal.background = leftStyle.active.background;
-          if (_currentMode == WindowMode.ExampleBuilder)
-              middleStyle.normal.background = middleStyle.active.background;
-          if (_currentMode == WindowMode.PromptLibrary)
-              rightStyle.normal.background = rightStyle.active.background;
-
-          if (GUILayout.Toggle(_currentMode == WindowMode.SceneBuilder, "Scene Builder", leftStyle))
-              SwitchMode(WindowMode.SceneBuilder);
-          if (GUILayout.Toggle(_currentMode == WindowMode.ExampleBuilder, "Example Builder", middleStyle))
-              SwitchMode(WindowMode.ExampleBuilder);
-          if (GUILayout.Toggle(_currentMode == WindowMode.PromptLibrary, "Prompt Library", rightStyle))
-              SwitchMode(WindowMode.PromptLibrary);
-      }
-
-      void SwitchMode(WindowMode newMode)
-      {
-          if (_currentMode != newMode)
+          // Limit to 1000 entries to prevent unbounded growth
+          if (CurrentLog.Count > 1000)
           {
-              _currentMode = newMode;
-              Repaint();
-          }
-      }
-
-  # ============================================================================
-  # 2. UI STRUCTURE - SHARED COMPONENTS
-  # ============================================================================
-
-  ui_structure:
-    current_layout: |
-      AIAssistantWindow.OnGUI() structure:
-      1. DisplayHeader() - Toolbar with mode switcher and buttons
-      2. DisplayLogArea() - Scrollable message history (mode-aware)
-      3. DisplayPendingActions() - Scene Builder only (tool approvals)
-      4. DisplayExampleBuilderActions() - Example Builder only (execute button)
-      5. DisplayPromptLibraryBrowser() - Prompt Library only (tree + preview)
-      6. DisplayPromptInput() - Text area + submit (Scene Builder & Example Builder)
-
-    header_toolbar:
-      layout: |
-        ┌────────────────────────────────────────────────────────────┐
-        │ [Scene Builder▼][Example Builder][Prompt Library]  [⚙][🔄][⌫]│
-        └────────────────────────────────────────────────────────────┘
-
-      buttons_by_mode:
-        shared:
-          - button: "Copy Last Response"
-            availability: All modes
-            behavior: Copies CurrentResponseId's last message to clipboard
-
-        scene_builder:
-          - button: "Refresh Index"
-            behavior: Re-index project and scene
-          - button: "Clear Conversation"
-            behavior: Clear CurrentLog and reset CurrentResponseId
-
-        example_builder:
-          - button: "Save Example"
-            behavior: Save generated example to PromptLibrary
-            enabled: Only when _generatedExample != null
-          - button: "Clear"
-            behavior: Clear CurrentLog and reset conversation
-
-        prompt_library:
-          - button: "Refresh Library"
-            behavior: Rescan PromptLibrary folder for new files
-
-      context_toggle:
-        location: Header toolbar (after mode switcher, before utility buttons)
-        control: Toggle checkbox
-        label: "📋 Include scene & prefabs"
-        default: true (checked)
-        tooltip: "When enabled, sends scene JSON and prefab catalog to AI. Disable for general questions."
-        affects: Only Scene Builder and Example Builder modes
-        implementation: |
-          private bool _includeProjectContext = true;
-
-          // In header:
-          _includeProjectContext = GUILayout.Toggle(_includeProjectContext,
-              new GUIContent("📋 Include scene & prefabs",
-              "Disable for general questions without scene context"),
-              EditorStyles.toolbarButton, GUILayout.Width(180));
-
-    log_area:
-      shared_structure: |
-        void DisplayLogArea()
-        {
-            EditorGUILayout.LabelField("Log", EditorStyles.boldLabel);
-
-            Vector2 scrollPos = _modeScrollPositions.GetValueOrDefault(_currentMode);
-            scrollPos = EditorGUILayout.BeginScrollView(scrollPos, GUILayout.Height(200));
-            _modeScrollPositions[_currentMode] = scrollPos;
-
-            switch (_currentMode)
-            {
-                case WindowMode.SceneBuilder:
-                    DisplaySceneBuilderLog();
-                    break;
-                case WindowMode.ExampleBuilder:
-                    DisplayExampleBuilderLog();
-                    break;
-                case WindowMode.PromptLibrary:
-                    DisplayPromptLibraryPreview();
-                    break;
-            }
-
-            EditorGUILayout.EndScrollView();
-        }
-
-      scene_builder_log:
-        behavior: Existing behavior (displays conversation history)
-        implementation: No changes needed
-
-      example_builder_log:
-        behavior: |
-          Displays example generation conversation:
-          - User prompts
-          - Generated examples (with syntax highlighting)
-          - Diagnosis messages
-          - Execution results
-
-        example_output: |
-          [10:23:45] [User] Generate example: box under table using box.top → table.bottom
-          [10:23:47] [AI] Generated example:
-
-          ────────────────────────────────────────────────────
-          EXAMPLE: Box Under Table
-
-          Step 0: TableSquareMedium scale=[0.341,0.341,0.341]
-          Step 7: box_pivot = table_bottom_world - box.top_world_offset
-          OUTPUT: position=[2.0, -0.497, -2.0], rotation=[0,0,0,1]
-          ────────────────────────────────────────────────────
-
-          [10:24:10] [System] Execution complete. Objects created.
-          [10:25:33] [User] Box is tilted 45° but should be aligned
-          [10:25:35] [AI] Diagnosis: Rotation not calculated properly...
-
-      prompt_library_preview:
-        behavior: Shows selected prompt file content with syntax highlighting
-        layout: |
-          If no prompt selected:
-            Show help box: "Select a prompt below to preview"
-          Else:
-            Show prompt content as TextArea (read-only)
-
-    prompt_input:
-      shared_structure: |
-        void DisplayPromptInput()
-        {
-            if (_currentMode == WindowMode.PromptLibrary)
-                return; // Prompt Library is browse-only
-
-            GUILayout.Space(10);
-
-            string placeholder = GetPlaceholderForMode();
-            EditorGUILayout.LabelField(placeholder, EditorStyles.boldLabel);
-
-            CurrentPrompt = EditorGUILayout.TextArea(CurrentPrompt, GUILayout.Height(60));
-
-            if (GUILayout.Button("Submit (Ctrl+Enter)", GUILayout.Height(30)))
-            {
-                OnSubmitPrompt();
-            }
-
-            GUILayout.Space(5);
-        }
-
-      placeholders:
-        scene_builder: "Your Prompt (e.g., 'Place a table in the center'):"
-        example_builder: "Example Request (e.g., 'Generate: box under table using box.top → table.bottom'):"
-
-  # ============================================================================
-  # 3. SCENE BUILDER MODE (EXISTING - MINIMAL CHANGES)
-  # ============================================================================
-
-  scene_builder_mode:
-    changes_required: |
-      1. Wrap existing logic in HandleSceneBuilderPrompt()
-      2. Use CurrentResponseId instead of _lastResponseId
-      3. Append to CurrentLog instead of _logEntries
-      4. Check _includeProjectContext when building context
-
-    implementation: |
-      void HandleSceneBuilderPrompt(string prompt)
-      {
-          EditorUtility.DisplayProgressBar("AI Assistant", "Building context...", 0.3f);
-
-          string systemMessage, toolsJson;
-          string userMessage = ContextBuilder.BuildContextPack(prompt,
-              _settings.TokenBudget, out systemMessage, out toolsJson, _includeProjectContext);
-
-          EditorUtility.DisplayProgressBar("AI Assistant", "Calling OpenAI API...", 0.6f);
-
-          var plan = OpenAIClient.SendRequest(_settings, systemMessage, userMessage,
-              CurrentResponseId, null, toolsJson);
-
-          if (plan.Success)
-          {
-              if (!string.IsNullOrEmpty(plan.Message))
-              {
-                  _modeLastMessages[_currentMode] = plan.Message;
-                  AppendLog($"[AI] {plan.Message}", LogType.Log);
-              }
-
-              if (plan.Actions != null && plan.Actions.Count > 0)
-              {
-                  _pendingActions = plan.Actions;
-                  _actionCheckboxes = new bool[plan.Actions.Count];
-                  AppendLog($"[System] {plan.Actions.Count} action(s) pending approval", LogType.Log);
-              }
-
-              CurrentResponseId = plan.ResponseId;
-          }
-          else
-          {
-              AppendLog($"[Error] {plan.ErrorMessage}", LogType.Error);
-          }
-      }
-
-    context_builder_modification: |
-      // In ContextBuilder.cs (line 29)
-      public static string BuildContextPack(string userPrompt, int tokenBudget,
-          out string systemMessage, out string toolsJson,
-          bool includeProjectContext = true)
-      {
-          var sysSb = new StringBuilder();
-          // ... build systemMessage (algorithm + prompt library) ...
-          systemMessage = sysSb.ToString();
-
-          var sb = new StringBuilder();
-
-          if (includeProjectContext)
-          {
-              // Section 2: Project Metadata
-              sb.AppendLine("## Project Metadata");
-              string projectMetadata = ReadArtifact("ProjectMetadata.json");
-              sb.AppendLine(projectMetadata);
-
-              // Section 3: Active Scene
-              sb.AppendLine("## Active Scene");
-              string sceneArtifact = ReadArtifact($"{activeScene.name}.json");
-              sb.AppendLine(sceneArtifact);
-
-              // Section 4: Prefab Catalog
-              sb.AppendLine("## Available Prefabs Catalog");
-              string catalogJson = GeneratePrefabCatalog();
-              sb.AppendLine(catalogJson);
+              CurrentLog.RemoveRange(0, 100); // Remove oldest 100 entries
+              CurrentLog.Insert(0, "[System] (Log trimmed - oldest entries removed)");
           }
 
-          // User prompt (always included)
-          sb.AppendLine($"User Request: {userPrompt}");
-
-          toolsJson = DynamicToolGenerator.GenerateToolsJson(selectedTags);
-          return sb.ToString();
-      }
-
-  # ============================================================================
-  # 4. EXAMPLE BUILDER MODE
-  # ============================================================================
-
-  example_builder_mode:
-    purpose: Generate, execute, diagnose, and save prompt library examples
-
-    state_fields: |
-      // Example Builder specific state
-      private ExampleGenerationResult _generatedExample;
-      private List<GameObject> _createdObjects = new List<GameObject>();
-
-      class ExampleGenerationResult
-      {
-          public string ExampleText;
-          public string ScenarioDescription;
-          public int IterationCount;
-      }
-
-    workflow:
-      step_1_generate:
-        user_prompt: "Generate example: Place box under table using box.top → table.bottom"
-        implementation: |
-          void HandleExampleBuilderPrompt(string prompt)
-          {
-              if (prompt.StartsWith("Generate", StringComparison.OrdinalIgnoreCase))
-              {
-                  GenerateExample(prompt);
-              }
-              else if (prompt.StartsWith("Save", StringComparison.OrdinalIgnoreCase))
-              {
-                  SaveExample(prompt);
-              }
-              else
-              {
-                  // Treat as diagnosis feedback
-                  DiagnoseAndRefine(prompt);
-              }
-          }
-
-          void GenerateExample(string prompt)
-          {
-              EditorUtility.DisplayProgressBar("Example Builder", "Generating...", 0.5f);
-
-              // Extract scenario from prompt (remove "Generate example:" prefix)
-              string scenario = prompt.Replace("Generate example:", "").Trim();
-
-              // Build context for example generation
-              string systemMessage = BuildExampleGenerationSystemMessage();
-              string userMessage = $"Generate a complete Step 0-5 example demonstrating: {scenario}\n\n" +
-                  "Requirements:\n" +
-                  "- Follow structure of lamp_on_scaled_table.txt\n" +
-                  "- Use quaternions [x,y,z,w] (NOT Euler angles)\n" +
-                  "- Show R_ls transformation explicitly\n" +
-                  "- Include Step 0 metadata writedown\n" +
-                  "- Include Step 5 verification\n" +
-                  "- Format as markdown\n\n" +
-                  "Generate the example now:";
-
-              var response = OpenAIClient.SendRequest(_settings, systemMessage, userMessage,
-                  CurrentResponseId, null, "[]");
-
-              if (response.Success && !string.IsNullOrEmpty(response.Message))
-              {
-                  AppendLog($"[AI] {response.Message}", LogType.Log);
-
-                  _generatedExample = new ExampleGenerationResult
-                  {
-                      ExampleText = response.Message,
-                      ScenarioDescription = scenario,
-                      IterationCount = 1
-                  };
-
-                  AppendLog("[System] Example generated. Click 'Execute Example' to test.", LogType.Log);
-                  CurrentResponseId = response.ResponseId;
-              }
-              else
-              {
-                  AppendLog($"[Error] {response.ErrorMessage}", LogType.Error);
-              }
-          }
-
-        system_message_construction: |
-          string BuildExampleGenerationSystemMessage()
-          {
-              // Reuse ContextBuilder for algorithm + prompt library
-              string systemMessage, toolsJson;
-              ContextBuilder.BuildContextPack("", _settings.TokenBudget,
-                  out systemMessage, out toolsJson, includeProjectContext: false);
-
-              // Add example-specific instructions
-              var sb = new StringBuilder(systemMessage);
-              sb.AppendLine();
-              sb.AppendLine("═══════════════════════════════════════════════════════════");
-              sb.AppendLine("## EXAMPLE GENERATION INSTRUCTIONS");
-              sb.AppendLine("═══════════════════════════════════════════════════════════");
-              sb.AppendLine();
-              sb.AppendLine("You are generating TEACHING EXAMPLES for the prompt library.");
-              sb.AppendLine("Examples demonstrate correct SLS methodology step-by-step.");
-              sb.AppendLine();
-              sb.AppendLine("Required structure:");
-              sb.AppendLine("1. Title: EXAMPLE: {description}");
-              sb.AppendLine("2. Goal: Clear statement of what to demonstrate");
-              sb.AppendLine("3. Given: Scene context (floor, walls, etc.)");
-              sb.AppendLine("4. Step 0: WRITE DOWN metadata (scale, R_ls, semantic points)");
-              sb.AppendLine("5. Step 1-5: SLS transformations with calculations");
-              sb.AppendLine("6. OUTPUT TO TOOL: position, rotation, scale");
-              sb.AppendLine("7. KEY TAKEAWAYS: Educational notes");
-              sb.AppendLine();
-              sb.AppendLine("CRITICAL:");
-              sb.AppendLine("- Use quaternions [x,y,z,w] (NEVER Euler angles)");
-              sb.AppendLine("- Show R_ls transformation explicitly");
-              sb.AppendLine("- Include verification calculations");
-              sb.AppendLine("- Format as markdown with clear sections");
-
-              return sb.ToString();
-          }
-
-      step_2_execute:
-        ui_component: |
-          void DisplayExampleBuilderActions()
-          {
-              if (_currentMode != WindowMode.ExampleBuilder || _generatedExample == null)
-                  return;
-
-              GUILayout.Space(10);
-              EditorGUILayout.LabelField("Actions:", EditorStyles.boldLabel);
-
-              EditorGUILayout.BeginHorizontal();
-
-              if (GUILayout.Button("▶️ Execute Example", GUILayout.Height(30)))
-              {
-                  OnExecuteExample();
-              }
-
-              if (GUILayout.Button("🔄 Regenerate", GUILayout.Height(30)))
-              {
-                  OnRegenerateExample();
-              }
-
-              if (GUILayout.Button("🧹 Clear Scene", GUILayout.Height(30)))
-              {
-                  OnClearCreatedObjects();
-              }
-
-              EditorGUILayout.EndHorizontal();
-              GUILayout.Space(10);
-          }
-
-        implementation: |
-          void OnExecuteExample()
-          {
-              if (_generatedExample == null)
-                  return;
-
-              AppendLog("[System] Executing example...", LogType.Log);
-
-              // Send example to AI, ask it to execute the scenario
-              string systemMessage = BuildExampleExecutionSystemMessage();
-              string userMessage = $"Execute this placement scenario:\n\n" +
-                  $"Scenario: {_generatedExample.ScenarioDescription}\n\n" +
-                  $"Follow the calculations shown in this example:\n" +
-                  $"```\n{_generatedExample.ExampleText}\n```\n\n" +
-                  $"Generate the appropriate tool calls.";
-
-              var plan = OpenAIClient.SendRequest(_settings, systemMessage, userMessage,
-                  CurrentResponseId, null, toolsJson);
-
-              if (plan.Success)
-              {
-                  if (plan.Actions != null && plan.Actions.Count > 0)
-                  {
-                      // Execute immediately (no approval needed in Example Builder)
-                      var results = DynamicPlanApplier.ApplyPlan(plan.Actions, _settings.PreviewMode);
-
-                      // Track created objects for cleanup
-                      foreach (var result in results)
-                      {
-                          if (result.Success && result.CreatedObject != null)
-                          {
-                              _createdObjects.Add(result.CreatedObject);
-                          }
-                      }
-
-                      // Re-index scene
-                      Scene activeScene = SceneManager.GetActiveScene();
-                      if (activeScene.isDirty)
-                          EditorSceneManager.SaveScene(activeScene);
-                      ProjectIndexer.IndexAll();
-
-                      AppendLog($"[System] Created {results.Count} object(s). Inspect the scene.", LogType.Log);
-                  }
-
-                  CurrentResponseId = plan.ResponseId;
-              }
-              else
-              {
-                  AppendLog($"[Error] {plan.ErrorMessage}", LogType.Error);
-              }
-          }
-
-      step_3_diagnose:
-        user_prompt: "Box is floating 0.5m above table"
-        implementation: |
-          void DiagnoseAndRefine(string observation)
-          {
-              AppendLog($"[User] {observation}", LogType.Log);
-              AppendLog("[System] Diagnosing...", LogType.Log);
-
-              string systemMessage = BuildExampleGenerationSystemMessage(); // Same as generation
-              string userMessage = $"I executed this example:\n" +
-                  $"```\n{_generatedExample.ExampleText}\n```\n\n" +
-                  $"I observed: {observation}\n\n" +
-                  $"Please diagnose:\n" +
-                  $"1. Which Step (0-5) contains the error?\n" +
-                  $"2. What exactly is wrong?\n" +
-                  $"3. Why does this cause the observed symptom?\n\n" +
-                  $"Then provide:\n" +
-                  $"- DIAGNOSIS: Your analysis\n" +
-                  $"- CORRECTED EXAMPLE: Updated version with fixes\n" +
-                  $"- LESSON LEARNED: Key concept to remember\n\n" +
-                  $"Format response as markdown with these three sections.";
-
-              var response = OpenAIClient.SendRequest(_settings, systemMessage, userMessage,
-                  CurrentResponseId, null, "[]");
-
-              if (response.Success && !string.IsNullOrEmpty(response.Message))
-              {
-                  AppendLog($"[AI] {response.Message}", LogType.Log);
-
-                  // Update example with corrected version
-                  _generatedExample.ExampleText = ExtractCorrectedExample(response.Message);
-                  _generatedExample.IterationCount++;
-
-                  AppendLog($"[System] Example refined (iteration {_generatedExample.IterationCount}). " +
-                      "Review and re-execute if needed.", LogType.Log);
-
-                  CurrentResponseId = response.ResponseId;
-              }
-              else
-              {
-                  AppendLog($"[Error] {response.ErrorMessage}", LogType.Error);
-              }
-          }
-
-      step_4_save:
-        user_prompt: "Save as box_under_table in Furniture category"
-        implementation: |
-          void SaveExample(string prompt)
-          {
-              if (_generatedExample == null)
-              {
-                  AppendLog("[Error] No example to save. Generate an example first.", LogType.Error);
-                  return;
-              }
-
-              // Parse: "Save as {name} in {category} category"
-              var match = Regex.Match(prompt, @"Save as (\w+) in (\w+)", RegexOptions.IgnoreCase);
-              if (!match.Success)
-              {
-                  AppendLog("[Error] Format: 'Save as {name} in {category}'", LogType.Error);
-                  return;
-              }
-
-              string name = match.Groups[1].Value;
-              string category = match.Groups[2].Value;
-
-              // Construct path
-              string basePath = "Assets/ContextAwareSceneBuilder/PromptLibrary/Examples";
-              string fullPath = $"{basePath}/{category}/{name}.txt";
-
-              try
-              {
-                  // Ensure directory exists
-                  Directory.CreateDirectory(Path.GetDirectoryName(fullPath));
-
-                  // Write example
-                  File.WriteAllText(fullPath, _generatedExample.ExampleText);
-
-                  // Refresh AssetDatabase
-                  AssetDatabase.Refresh();
-
-                  // Add to PromptLibrarySettings (auto-enabled)
-                  var settings = PromptLibrarySettings.GetOrCreateSettings();
-                  string relativePath = $"Examples/{category}/{name}.txt";
-                  settings.SetPromptEnabled(relativePath, true);
-
-                  AppendLog($"[System] Example saved to {fullPath}", LogType.Log);
-                  AppendLog("[AI] Example saved successfully. You can now enable it in the Prompt Library " +
-                      "to include it in Scene Builder's context.", LogType.Log);
-
-                  // Switch to Prompt Library mode to show new example
-                  SwitchMode(WindowMode.PromptLibrary);
-              }
-              catch (Exception ex)
-              {
-                  AppendLog($"[Error] Failed to save: {ex.Message}", LogType.Error);
-              }
-          }
-
-  # ============================================================================
-  # 5. PROMPT LIBRARY MODE
-  # ============================================================================
-
-  prompt_library_mode:
-    purpose: Browse prompt library, enable/disable examples, preview content
-
-    layout: |
-      ┌────────────────────┬───────────────────────────────────┐
-      │                    │                                   │
-      │  TREE VIEW         │  PREVIEW PANE                     │
-      │  (30% width)       │  (70% width)                      │
-      │                    │                                   │
-      │  ☑ Examples/       │  [Selected prompt content]        │
-      │    ☑ Beds/         │                                   │
-      │      ☑ bed_agai... │                                   │
-      │      ☐ bed_cent... │                                   │
-      │    ☐ Tables/       │                                   │
-      │  ☑ Reference/      │                                   │
-      │    ☑ semantic_a... │                                   │
-      │                    │                                   │
-      └────────────────────┴───────────────────────────────────┘
-
-    state_fields: |
-      // Prompt Library specific state
-      private PromptLibrarySettings _promptSettings;
-      private List<string> _allPromptPaths;
-      private string _selectedPromptPath;
-      private Dictionary<string, bool> _expandedFolders = new Dictionary<string, bool>();
-
-    implementation: |
-      void OnGUI_PromptLibraryMode()
-      {
-          EditorGUILayout.BeginHorizontal();
-
-          // Left: Tree view (30%)
-          EditorGUILayout.BeginVertical(GUILayout.Width(position.width * 0.3f));
-          DisplayPromptTree();
-          EditorGUILayout.EndVertical();
-
-          // Right: Preview (70%)
-          EditorGUILayout.BeginVertical();
-          DisplayPromptPreview();
-          EditorGUILayout.EndVertical();
-
-          EditorGUILayout.EndHorizontal();
-      }
-
-      void DisplayPromptTree()
-      {
-          EditorGUILayout.LabelField("Prompt Library", EditorStyles.boldLabel);
-
-          Vector2 scrollPos = _modeScrollPositions.GetValueOrDefault(_currentMode);
-          scrollPos = EditorGUILayout.BeginScrollView(scrollPos);
-          _modeScrollPositions[_currentMode] = scrollPos;
-
-          // Group prompts by folder
-          var folders = _allPromptPaths
-              .GroupBy(p => Path.GetDirectoryName(p))
-              .OrderBy(g => g.Key);
-
-          foreach (var folder in folders)
-          {
-              string folderName = folder.Key;
-              bool isExpanded = _expandedFolders.GetValueOrDefault(folderName, true);
-
-              // Folder header with foldout
-              EditorGUILayout.BeginHorizontal();
-              isExpanded = EditorGUILayout.Foldout(isExpanded, folderName, true);
-              _expandedFolders[folderName] = isExpanded;
-              EditorGUILayout.EndHorizontal();
-
-              if (isExpanded)
-              {
-                  EditorGUI.indentLevel++;
-
-                  foreach (var promptPath in folder)
-                  {
-                      EditorGUILayout.BeginHorizontal();
-
-                      // Checkbox for enable/disable
-                      bool isEnabled = _promptSettings.IsPromptEnabled(promptPath);
-                      bool newEnabled = EditorGUILayout.Toggle(isEnabled, GUILayout.Width(20));
-
-                      if (newEnabled != isEnabled)
-                      {
-                          _promptSettings.SetPromptEnabled(promptPath, newEnabled);
-                          EditorUtility.SetDirty(_promptSettings);
-                          AssetDatabase.SaveAssets();
-                      }
-
-                      // Filename button for selection
-                      string fileName = Path.GetFileName(promptPath);
-                      if (GUILayout.Button(fileName, EditorStyles.label))
-                      {
-                          _selectedPromptPath = promptPath;
-                          Repaint();
-                      }
-
-                      EditorGUILayout.EndHorizontal();
-                  }
-
-                  EditorGUI.indentLevel--;
-              }
-          }
-
-          EditorGUILayout.EndScrollView();
-      }
-
-      void DisplayPromptPreview()
-      {
-          EditorGUILayout.LabelField("Preview", EditorStyles.boldLabel);
-
-          if (string.IsNullOrEmpty(_selectedPromptPath))
-          {
-              EditorGUILayout.HelpBox("Select a prompt to preview its content.", MessageType.Info);
-          }
-          else
-          {
-              string fullPath = PromptLibraryLoader.GetFullPath(_selectedPromptPath);
-              if (File.Exists(fullPath))
-              {
-                  Vector2 scrollPos = _previewScrollPosition;
-                  scrollPos = EditorGUILayout.BeginScrollView(scrollPos);
-                  _previewScrollPosition = scrollPos;
-
-                  string content = File.ReadAllText(fullPath);
-                  EditorGUILayout.TextArea(content, EditorStyles.wordWrappedLabel,
-                      GUILayout.ExpandHeight(true));
-
-                  EditorGUILayout.EndScrollView();
-              }
-              else
-              {
-                  EditorGUILayout.HelpBox($"File not found: {fullPath}", MessageType.Warning);
-              }
-          }
-      }
-
-      void RefreshPromptList()
-      {
-          _allPromptPaths = PromptLibraryLoader.ScanPromptFiles();
           Repaint();
       }
 
+    mode_transitions:
+      enter_example_mode: |
+        void OnCreateNewExample()
+        {
+            if (string.IsNullOrWhiteSpace(_newExampleName))
+            {
+                EditorUtility.DisplayDialog("Error", "Enter example name first", "OK");
+                return;
+            }
+
+            EnterExampleMode(null); // null = creating new
+        }
+
+        void OnRefineSelectedExample()
+        {
+            if (string.IsNullOrEmpty(_selectedPromptPath))
+            {
+                EditorUtility.DisplayDialog("Error", "Select a prompt first", "OK");
+                return;
+            }
+
+            EnterExampleMode(_selectedPromptPath); // pass selected file
+        }
+
+        void EnterExampleMode(string existingPromptPath)
+        {
+            _isExampleMode = true;
+
+            // Auto-enable Example Mode prompts
+            AutoEnableExampleModePrompts();
+
+            // Log transition with color
+            AppendLog("→ Entering example mode", LogType.System, Color.cyan);
+
+            // If refining, load existing content
+            if (existingPromptPath != null)
+            {
+                string content = File.ReadAllText(PromptLibraryLoader.GetFullPath(existingPromptPath));
+                // Display in preview pane for editing
+            }
+
+            Repaint();
+        }
+
+      exit_example_mode: |
+        void OnExitExampleMode()
+        {
+            AppendLog("→ Returning to scene builder mode", LogType.System, Color.cyan);
+
+            _isExampleMode = false;
+
+            // Restore Scene Builder prompts
+            AutoEnableSceneBuilderPrompts();
+
+            // Refresh prompt library (in case new example was saved)
+            RefreshPromptList();
+
+            Repaint();
+        }
+
   # ============================================================================
-  # 6. IMPLEMENTATION EFFORT & PHASES
+  # 3. PROMPT-BASED SYSTEM MESSAGES
   # ============================================================================
 
-  implementation_effort:
-    total_hours: 14-16 hours
+  prompt_system:
+    purpose: |
+      Move all hardcoded instructions from ContextBuilder.cs to editable .txt files.
+      Users can view, edit, and manage system instructions through the prompt library.
 
-    breakdown:
-      phase_1_mode_infrastructure:
-        hours: 3
-        tasks:
-          - Add WindowMode enum
-          - Add mode-specific state dictionaries
-          - Implement SwitchMode() method
-          - Add mode selector UI (segmented control)
-          - Test mode switching (state isolation)
+    core_prompts:
+      basic_instructions:
+        path: PromptLibrary/Core/basic_instructions.txt
+        source: Extract from ContextBuilder.cs (lines 312-600)
+        content: All Scene Builder instructions (placement rules, collision detection, etc.)
+        auto_enabled: Scene Builder mode (default)
 
-      phase_2_refactor_existing:
-        hours: 4
-        tasks:
-          - Extract DisplaySceneBuilderLog() from DisplayLogArea()
-          - Make header buttons mode-aware (conditional rendering)
-          - Update OnSubmitPrompt() to route by mode (HandleSceneBuilderPrompt)
-          - Update AppendLog() to append to CurrentLog
-          - Add _includeProjectContext toggle
-          - Modify ContextBuilder.BuildContextPack() to accept includeProjectContext parameter
-          - Test Scene Builder mode (ensure no regression)
+      sls_detailed_guide:
+        path: PromptLibrary/Core/sls_detailed_guide.txt
+        source: Move from SLS_MATH_README.md
+        content: Comprehensive SLS methodology with examples
+        auto_enabled: Example Mode
 
-      phase_3_example_builder:
-        hours: 4
-        tasks:
-          - Add Example Builder state fields (_generatedExample, _createdObjects)
-          - Implement HandleExampleBuilderPrompt() (routing logic)
-          - Implement GenerateExample() (AI generation)
-          - Implement OnExecuteExample() (execution through DynamicPlanApplier)
-          - Implement DiagnoseAndRefine() (multi-turn diagnosis)
-          - Implement SaveExample() (file save + PromptLibrarySettings update)
-          - Implement DisplayExampleBuilderActions() (Execute/Regenerate buttons)
-          - Test full workflow (generate → execute → diagnose → save)
+      example_generation_instructions:
+        path: PromptLibrary/Core/example_generation_instructions.txt
+        source: New file (create from template below)
+        content: Instructions for generating Step 0-5 format examples
+        auto_enabled: Example Mode
 
-      phase_4_prompt_library:
-        hours: 2
-        tasks:
-          - Add Prompt Library state fields (_allPromptPaths, _selectedPromptPath, _expandedFolders)
-          - Implement DisplayPromptTree() (simplified tree view with checkboxes)
-          - Implement DisplayPromptPreview() (file content display)
-          - Implement RefreshPromptList()
-          - Test enable/disable functionality
-          - Verify preview updates correctly
+      debug_guide:
+        path: PromptLibrary/Diagnostics/debug_guide.txt
+        source: New file (create from template below)
+        content: Instructions for diagnosing placement errors
+        auto_enabled: When user reports error in Example Mode
 
-      phase_5_polish_and_test:
-        hours: 3
-        tasks:
-          - UI polish (spacing, colors, icons)
-          - Edge case handling (empty states, errors)
-          - Test mode switching (state isolation verification)
-          - Test conversation continuity in each mode
-          - Test context toggle (Scene Builder questions mode)
-          - Performance testing (large prompt library)
-          - Documentation (inline comments, README update)
+    prompt_file_templates:
+      example_generation_instructions_content: |
+        # Example Generation Instructions
+
+        You are creating teaching examples for the prompt library.
+        Examples demonstrate correct SLS methodology step-by-step.
+
+        ## Required Structure:
+        - Title: EXAMPLE: {description}
+        - Goal: Clear statement of objective
+        - Step 0: WRITE DOWN metadata (scale, R_ls, semantic points)
+        - Steps 1-5: SLS transformations with calculations
+        - OUTPUT: position, rotation, scale
+        - KEY TAKEAWAYS: Educational notes
+
+        ## Critical Requirements:
+        - Use quaternions [x,y,z,w] (NEVER Euler angles)
+        - Show R_ls transformation explicitly
+        - Include verification calculations
+        - Format as markdown with clear sections
+
+      debug_guide_content: |
+        # Diagnostic Guide
+
+        When user reports placement errors, follow this process:
+
+        ## 1. Analyze Error Description
+        - Identify symptoms (floating, tilted, wrong position)
+        - Map symptoms to likely causes
+
+        ## 2. Review Calculation Steps
+        - Check Step 0 metadata (correct scale/R_ls?)
+        - Verify Step 1 SLS transform
+        - Check Step 2 alignment quaternions
+        - Validate Step 4 position calculation
+
+        ## 3. Provide Corrected Example
+        - Explain what was wrong
+        - Show corrected calculation
+        - Provide complete corrected Steps 0-5
+
+    auto_enable_logic: |
+      void AutoEnableSceneBuilderPrompts()
+      {
+          var settings = PromptLibrarySettings.GetOrCreateSettings();
+
+          TryEnablePrompt(settings, "PromptLibrary/Core/basic_instructions.txt");
+          TryDisablePrompt(settings, "PromptLibrary/Core/sls_detailed_guide.txt");
+          TryDisablePrompt(settings, "PromptLibrary/Core/example_generation_instructions.txt");
+          TryDisablePrompt(settings, "PromptLibrary/Diagnostics/debug_guide.txt");
+      }
+
+      void AutoEnableExampleModePrompts()
+      {
+          var settings = PromptLibrarySettings.GetOrCreateSettings();
+
+          TryEnablePrompt(settings, "PromptLibrary/Core/sls_detailed_guide.txt");
+          TryEnablePrompt(settings, "PromptLibrary/Core/example_generation_instructions.txt");
+          TryEnablePrompt(settings, "PromptLibrary/Examples/Core/wall_at_edge.txt");
+          TryEnablePrompt(settings, "PromptLibrary/Examples/Furniture/book_on_shelf.txt");
+          TryEnablePrompt(settings, "PromptLibrary/Examples/Walls/wall_consistency.txt");
+      }
+
+      void AutoEnableDebugGuide()
+      {
+          var settings = PromptLibrarySettings.GetOrCreateSettings();
+          TryEnablePrompt(settings, "PromptLibrary/Diagnostics/debug_guide.txt");
+      }
+
+      void TryEnablePrompt(PromptLibrarySettings settings, string path)
+      {
+          string fullPath = PromptLibraryLoader.GetFullPath(path);
+          if (File.Exists(fullPath))
+              settings.SetPromptEnabled(path, true);
+          else
+              Debug.LogWarning($"[AI Assistant] Prompt not found: {path}");
+      }
+
+      void TryDisablePrompt(PromptLibrarySettings settings, string path)
+      {
+          string fullPath = PromptLibraryLoader.GetFullPath(path);
+          if (File.Exists(fullPath))
+              settings.SetPromptEnabled(path, false);
+      }
+
+    context_builder_refactor: |
+      // ContextBuilder.cs - Replace hardcoded system message
+      // NOTE: Keep return type as 'string' (user message), not ContextPack
+      public static string BuildContextPack(
+          string userPrompt,
+          int tokenBudget,
+          out string systemMessage,
+          out string toolsJson,
+          bool includeSceneContext = true,
+          bool includePrefabCatalog = true)
+      {
+          // Load enabled prompts from library
+          var promptSettings = PromptLibrarySettings.GetOrCreateSettings();
+          string libraryPrompts = PromptLibraryLoader.LoadEnabledPrompts(promptSettings);
+
+          // Build system message
+          StringBuilder sysSb = new StringBuilder();
+          sysSb.AppendLine(libraryPrompts); // Inject prompts (replaces hardcoded text)
+
+          // Build user message with context (if enabled)
+          StringBuilder userSb = new StringBuilder();
+
+          if (includeSceneContext || includePrefabCatalog)
+          {
+              userSb.AppendLine("## Current Context");
+
+              if (includeSceneContext)
+              {
+                  userSb.AppendLine("### Scene State");
+                  userSb.AppendLine(GetSceneContext());
+              }
+
+              if (includePrefabCatalog)
+              {
+                  userSb.AppendLine("### Available Prefabs");
+                  userSb.AppendLine(GetPrefabCatalog());
+              }
+          }
+
+          userSb.AppendLine("## User Request");
+          userSb.AppendLine(userPrompt);
+
+          systemMessage = sysSb.ToString();
+          // ... generate tools ...
+
+          return userSb.ToString(); // Return formatted user message
+      }
 
   # ============================================================================
-  # 7. VALIDATION & TESTING
+  # 4. EXAMPLE MODE WORKFLOW
   # ============================================================================
 
-  validation:
-    state_isolation_tests:
-      test_1: Switch from Scene Builder (mid-conversation) to Example Builder
-      expected: Scene Builder conversation preserved when switching back
+  example_mode_workflow:
+    step_1_generate:
+      user_action: Type prompt and submit
+      example: "Generate example: box under table using box.top → table.bottom"
+      implementation: |
+        void HandleExampleModePrompt(string prompt)
+        {
+            // Detect error reports
+            if (IsErrorReport(prompt))
+            {
+                AutoEnableDebugGuide();
+            }
 
-      test_2: Generate example in Example Builder, switch to Scene Builder
-      expected: Example Builder state (generated example) preserved when switching back
+            // Detect save request
+            if (IsSaveRequest(prompt))
+            {
+                SaveExample(prompt);
+                return; // Don't exit mode - user can continue iterating
+            }
 
-      test_3: Enable prompts in Prompt Library, switch to Scene Builder, submit request
-      expected: Enabled prompts included in AI context
+            // Otherwise, send to OpenAI with Example Mode context
+            SendToOpenAI(prompt);
+        }
 
-    conversation_continuity_tests:
-      test_1: Scene Builder multi-turn ("Place bed" → "Make it bigger")
-      expected: AI remembers bed from previous turn
+        bool IsErrorReport(string prompt)
+        {
+            string lower = prompt.ToLower();
+            return lower.Contains("wrong") || lower.Contains("error") ||
+                   lower.Contains("floating") || lower.Contains("incorrect");
+        }
 
-      test_2: Example Builder multi-turn (Generate → Diagnose → Diagnose again)
-      expected: AI remembers previous diagnosis iterations
+        bool IsSaveRequest(string prompt)
+        {
+            return prompt.StartsWith("save", StringComparison.OrdinalIgnoreCase);
+        }
 
-    context_toggle_tests:
-      test_1: Scene Builder with toggle OFF, ask "Explain SLS"
-      expected: AI receives no scene/prefab data, answers conceptually
+    step_2_save:
+      user_action: Type "Save as {name} in {category}"
+      example: "Save as box_under_table in Furniture"
+      implementation: |
+        void SaveExample(string prompt)
+        {
+            // Parse: "Save as lamp_on_table in Furniture"
+            // OR: "Save" (use _newExampleName and default category)
 
-      test_2: Scene Builder with toggle ON, ask "Place table"
-      expected: AI receives full scene context, places table correctly
+            var match = Regex.Match(prompt,
+                @"save\s+(?:as\s+)?([\w\-]+)(?:\.txt)?\s+(?:in|to)\s+(?:Examples/)?([\w\-]+)",
+                RegexOptions.IgnoreCase);
 
-    example_workflow_tests:
-      test_1: Generate example → Execute → Observe correct placement → Save
-      expected: Example saved to PromptLibrary, auto-enabled
+            string name = match.Success ? match.Groups[1].Value : _newExampleName;
+            string category = match.Success ? match.Groups[2].Value : "Core";
 
-      test_2: Generate example → Execute → Observe error → Diagnose → Re-execute → Save
-      expected: Corrected example saved after diagnosis
+            // Validate category exists
+            string categoryPath = $"Assets/ContextAwareSceneBuilder/PromptLibrary/Examples/{category}";
+            if (!AssetDatabase.IsValidFolder(categoryPath))
+            {
+                AppendLog($"[Error] Category '{category}' not found. Available: Core, Furniture, Walls",
+                    LogType.Error, Color.red);
+                return;
+            }
+
+            // Extract example from conversation
+            string exampleContent = ExtractExampleFromConversation();
+
+            // Algorithm: ExtractExampleFromConversation()
+            // 1. Find the last assistant message in CurrentState.logs
+            // 2. Look for code blocks marked with ```yaml or ```
+            // 3. Extract the content between the markers
+            // 4. If no code block found, return entire last assistant message
+            // 5. Add metadata header: "EXAMPLE: {name}\n\n" + extracted content
+
+            // Check for overwrite
+            string relativePath = $"PromptLibrary/Examples/{category}/{name}.txt";
+            string fullPath = $"{categoryPath}/{name}.txt";
+
+            if (File.Exists(fullPath))
+            {
+                if (!EditorUtility.DisplayDialog("Overwrite?",
+                    $"Prompt '{name}' already exists. Overwrite?",
+                    "Overwrite", "Cancel"))
+                    return;
+            }
+
+            // Write file
+            File.WriteAllText(fullPath, exampleContent);
+            AssetDatabase.Refresh(ImportAssetOptions.Default);
+
+            // Auto-enable the new prompt
+            var settings = PromptLibrarySettings.GetOrCreateSettings();
+            settings.SetPromptEnabled(relativePath, true);
+            var reference = settings.prompts.Find(p => p.relativePath == relativePath);
+            if (reference != null)
+                reference.autoEnabled = true;
+
+            AppendLog($"✓ Saved example to {relativePath}", LogType.Success, Color.green);
+            RefreshPromptList();
+
+            // Don't exit mode - user can continue refining
+        }
+
+    step_3_exit:
+      user_action: Click "Exit Example Mode" button
+      behavior: Returns to Scene Builder mode, restores conversation state
+
+  # ============================================================================
+  # 5. UNITY 6 COMPATIBILITY
+  # ============================================================================
+
+  unity6_compatibility:
+    serialization:
+      issue: Dictionaries not serialized by Unity (lost on domain reload)
+      solution: Use List<ModeState> with [SerializeField]
+      implementation: |
+        [System.Serializable]
+        public class ModeState
+        {
+            public WindowMode mode;
+            public string responseId;
+            public List<string> logs = new List<string>();
+            public string prompt = "";
+            public Vector2 scrollPosition;
+        }
+
+        [SerializeField] private List<ModeState> _modeStates = new List<ModeState>();
+        [SerializeField] private bool _isExampleMode = false;
+
+    asset_database:
+      best_practice: Use explicit ImportAssetOptions
+      implementation: |
+        AssetDatabase.Refresh(ImportAssetOptions.Default);
+
+    editor_window_lifecycle:
+      pattern: Subscribe in OnEnable, unsubscribe in OnDisable
+      implementation: |
+        void OnEnable()
+        {
+            _settings = AIAssistantSettings.GetOrCreateSettings();
+            _promptSettings = PromptLibrarySettings.GetOrCreateSettings();
+
+            // Initialize mode states if empty
+            if (_modeStates.Count == 0)
+            {
+                _modeStates.Add(new ModeState { mode = WindowMode.SceneBuilder });
+                _modeStates.Add(new ModeState { mode = WindowMode.ExampleBuilder });
+            }
+
+            RefreshPromptList();
+            EditorSceneManager.sceneSaved += OnSceneSaved;
+        }
+
+        void OnDisable()
+        {
+            EditorSceneManager.sceneSaved -= OnSceneSaved;
+        }
+
+  # ============================================================================
+  # 6. IMPLEMENTATION PHASES
+  # ============================================================================
+
+  implementation_phases:
+    total_hours: 16-18 hours
+
+    phase_1_extract_prompts:
+      hours: 2
+      tasks:
+        - Create PromptLibrary/Core/basic_instructions.txt (extract from ContextBuilder)
+        - Create PromptLibrary/Core/example_generation_instructions.txt (new)
+        - Create PromptLibrary/Diagnostics/debug_guide.txt (new)
+        - Move SLS_MATH_README.md → PromptLibrary/Core/sls_detailed_guide.txt
+        - Add autoEnabled field to PromptReference class
+        - Modify ContextBuilder.BuildContextPack() to load from prompts
+      validation:
+        - Scene Builder works with basic_instructions.txt
+        - Prompts load correctly
+        - No regression in functionality
+
+    phase_2_three_column_layout:
+      hours: 5-6
+      tasks:
+        - Implement three-column layout (40% | 30% | 30%)
+        - Add serializable state management (List<ModeState>)
+        - Implement prompt library tree view with checkboxes
+        - Implement preview pane (text-only display)
+        - Add "Create New Example" and "Refine Selected" buttons
+        - Add "Exit Example Mode" button (greyed by default)
+        - Add context checkboxes (Send scene / Send prefabs)
+      validation:
+        - Three columns render correctly
+        - Prompt library tree shows all prompts
+        - Checkboxes enable/disable prompts
+        - Selection shows preview
+        - State survives domain reload
+
+    phase_3_example_mode:
+      hours: 6
+      tasks:
+        - Implement EnterExampleMode() / OnExitExampleMode()
+        - Implement auto-enable prompt logic
+        - Implement HandleExampleModePrompt() routing
+        - Implement SaveExample() with validation
+        - Implement error detection (IsErrorReport)
+        - Implement ExtractExampleFromConversation()
+        - Add colored mode transition messages
+        - Add mode indicator in conversation column header
+      validation:
+        - Can enter Example Mode (button works)
+        - Correct prompts auto-enable
+        - Can save examples
+        - Category validation works
+        - Overwrite confirmation shows
+        - Exit returns to Scene Builder
+
+    phase_4_context_integration:
+      hours: 2
+      tasks:
+        - Update ContextBuilder.BuildContextPack() signature
+        - Wire up context checkboxes to ContextBuilder
+        - Verify includeSceneContext / includePrefabCatalog work
+      validation:
+        - Context toggles affect request size
+        - Scene Builder works with toggles
+        - Example Mode works with toggles
+
+    phase_5_polish_testing:
+      hours: 2
+      tasks:
+        - UI spacing and visual polish
+        - Error handling edge cases
+        - Documentation (README.md)
+      validation:
+        - All workflows tested end-to-end
+        - State isolation verified
+
+  # ============================================================================
+  # 7. VALIDATION TESTS
+  # ============================================================================
+
+  validation_tests:
+    state_persistence:
+      test_1: Enter Example Mode, recompile scripts, verify state preserved
+      test_2: Type prompt, recompile, verify prompt text preserved
+      test_3: Mid-conversation domain reload preserves response ID
+
+    scene_builder:
+      test_1: Normal scene building conversation works
+      test_2: Context toggles affect request size
+      test_3: basic_instructions.txt enabled by default
+      test_4: Multi-turn conversation continuity
+
+    example_mode:
+      test_1: Create new example flow complete
+      test_2: Refine existing example flow complete
+      test_3: Auto-enable prompts on enter
+      test_4: Auto-enable debug guide on error
+      test_5: Save validation works
+      test_6: Overwrite confirmation works
+      test_7: Exit restores Scene Builder state
+
+    prompt_library:
+      test_1: Tree shows all prompts
+      test_2: Checkboxes persist
+      test_3: Selection shows preview
+      test_4: Refresh updates tree
+
+files_summary:
+  new_files:
+    - PromptLibrary/Core/basic_instructions.txt (extracted from ContextBuilder)
+    - PromptLibrary/Core/example_generation_instructions.txt (new)
+    - PromptLibrary/Diagnostics/debug_guide.txt (new)
+    - PromptLibrary/README.md (documentation)
+
+  moved_files:
+    - SLS_MATH_README.md → PromptLibrary/Core/sls_detailed_guide.txt
+
+  modified_files:
+    - AIAssistantWindow.cs (major - three columns + Example Mode + serialization)
+    - ContextBuilder.cs (major - prompt-based system messages)
+    - PromptLibrarySettings.cs (minor - add autoEnabled field)
+
+  unchanged_files:
+    - PromptLibraryLoader.cs ✓
+    - PromptLibraryEditor.cs ✓ (keep as standalone alternative)
+    - OpenAIClient.cs ✓
+    - All existing example .txt files ✓
 
 notes:
-  why_mode_switching: |
-    Mode switching provides a unified interface for all AI Assistant workflows
-    without the complexity of separate windows or tabbed UI. Users can quickly
-    switch between scene building, example creation, and library management
-    while maintaining independent conversation contexts.
+  key_design_decisions: |
+    1. Three-column layout (not mode tabs) - all functionality visible at once
+    2. Temporary Example Mode (modal) - not a persistent mode, auto-exits on completion
+    3. Prompt-based system messages - all instructions in editable .txt files
+    4. Unity 6 serialization - List<ModeState> survives domain reloads
+    5. Single conversation - one chat log shared between Scene Builder and Example Mode
 
-  state_management_rationale: |
-    Dictionary-based state isolation prevents conversation interference between modes.
-    Each mode has its own response ID, log, and prompt history. This ensures that
-    switching from Scene Builder mid-conversation doesn't lose context, and Example
-    Builder diagnosis iterations don't pollute Scene Builder's conversation history.
+  why_three_columns: |
+    Three-column layout keeps all functionality accessible without mode switching.
+    Users can see the prompt library, create examples, and preview content
+    simultaneously. This is more efficient than tabbed or modal interfaces.
 
-  reuse_vs_new_code: |
-    This architecture maximizes code reuse:
-    - Shared: Log area structure, prompt input, header toolbar, OpenAI client calls
-    - New: Mode routing logic, Example Builder workflow, Prompt Library tree view
-    - Modified: Scene Builder prompt handling (extract to HandleSceneBuilderPrompt)
+  why_temporary_example_mode: |
+    Example Mode is a focused workflow: enter → create/refine → save → exit.
+    Making it modal (temporary) prevents users from accidentally mixing
+    example creation with scene building conversations. The "Exit Example Mode"
+    button provides clear affordance for returning to normal operation.
 
-    Estimated code distribution:
-    - Reused: 60% (existing AIAssistantWindow infrastructure)
-    - New: 30% (Example Builder + Prompt Library modes)
-    - Modified: 10% (Scene Builder refactoring for mode support)
-
-  execution_validation_clarification: |
-    Example Builder execution validates that examples teach correct patterns:
-    1. Generate example (AI produces Step 0-5 walkthrough)
-    2. Execute example (AI reads example, independently calculates, generates tool calls)
-    3. If example teaches wrong pattern → AI calculates wrong → user sees error
-    4. Diagnose (AI corrects example based on observed error)
-    5. Re-execute (AI re-calculates using corrected example)
-
-    This is NOT circular - the example is teaching material, and execution tests
-    if the teaching is correct by having the AI learn from it and apply the pattern.
-
-  future_enhancements: |
-    - Visual diff showing before/after corrections
-    - Screenshot capture + GPT-4V analysis
-    - Batch example generation
-    - Example-based regression testing
-    - Community example repository
+  why_prompt_based_instructions: |
+    Hardcoded instructions in ContextBuilder.cs are invisible to users and
+    require code recompilation to modify. Moving instructions to .txt files
+    makes them discoverable, editable, and version-controllable. Users can
+    create custom instruction sets without touching code.
