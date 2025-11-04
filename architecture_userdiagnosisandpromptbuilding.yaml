@@ -141,6 +141,80 @@ components:
         - NOTE: This is NOT Unity scene/prefab preview - just text content
 
   # ============================================================================
+  # 1b. EXAMPLE MODE UI COMPONENTS
+  # ============================================================================
+
+  example_mode_buttons:
+    overview: |
+      Two manual control buttons in Example Mode that give users explicit control
+      over when to save proposed changes and when to rerun diagnostic tests.
+      These buttons enforce the tool-based workflow where AI proposes via savePromptFile
+      tool calls and user controls execution.
+
+    save_example_button:
+      location: Conversation column, below prompt input field (left half of row)
+      appearance:
+        height: 30px
+        width: 50% of available width (left side)
+        label: "Save Example"
+        style: Primary action button (green tint when enabled)
+      enabled_when: |
+        _pendingActions.OfType<SavePromptFileAction>().Any() == true
+        (i.e., AI has called savePromptFile tool and action exists in queue)
+      disabled_state: Greyed out, not clickable
+      behavior_on_click: |
+        1. Find SavePromptFileAction in _pendingActions
+        2. Call action.Execute(previewMode: false) to write file to disk
+        3. Call PromptLibrarySettings.SetPromptAutoEnabled(relativePath, true)
+        4. Call PromptLibrarySettings.RefreshPromptList() to rescan files
+        5. Clear _pendingActions list
+        6. Update preview pane to show "Saved successfully" confirmation
+        7. Enable "Rerun Prompt" button by setting _hasTestedOnce = true
+      note: |
+        User can click this multiple times in one Example Mode session if AI
+        proposes multiple revisions. Does NOT auto-exit Example Mode.
+
+    rerun_prompt_button:
+      location: Conversation column, below prompt input (right half, next to Save button)
+      appearance:
+        height: 30px
+        width: 50% of available width (right side)
+        label: "Rerun Prompt"
+        style: Secondary action button (blue tint when enabled)
+      enabled_when: |
+        _hasTestedOnce == true AND _testPrompt is not empty/null
+        (i.e., user has tested at least once and we have a prompt to rerun)
+      disabled_state: Greyed out, not clickable, tooltip: "Save example first"
+      behavior_on_click: |
+        1. Clear conversation logs for current mode
+        2. Re-send _testPrompt (stored from initial test)
+        3. System auto-injects "Describe any issues you observed" after scene actions
+        4. AI responds with diagnostic analysis
+        5. AI may call savePromptFile again with refined content
+        6. Cycle repeats (user saves, tests again if needed)
+      note: |
+        This button avoids forcing users to retype test prompts for iterative
+        refinement cycles. The original test prompt is reused verbatim.
+
+    field_requirements:
+      new_fields_needed: |
+        // Add to AIAssistantWindow class
+        private string _testPrompt;       // Stores initial test prompt for rerun
+        private bool _hasTestedOnce;      // Enables Rerun button after first save
+
+      initialization: |
+        // Reset when entering Example Mode
+        _testPrompt = null;
+        _hasTestedOnce = false;
+
+      update_on_send: |
+        // When user sends first test prompt in Example Mode:
+        if (currentMode == WindowMode.ExampleBuilder && string.IsNullOrEmpty(_testPrompt))
+        {
+            _testPrompt = userPrompt; // Store for later rerun
+        }
+
+  # ============================================================================
   # 2. MODE SYSTEM (TEMPORARY EXAMPLE MODE)
   # ============================================================================
 
@@ -314,7 +388,7 @@ components:
       example_generation_instructions:
         path: PromptLibrary/Core/example_generation_instructions.txt
         source: New file (create from template below)
-        content: Instructions for generating Step 0-5 format examples
+        content: Instructions for generating Step 0-9b format examples (complete SLS algorithm)
         auto_enabled: Example Mode
 
       debug_guide:
@@ -334,7 +408,7 @@ components:
         - Title: EXAMPLE: {description}
         - Goal: Clear statement of objective
         - Step 0: WRITE DOWN metadata (scale, R_ls, semantic points)
-        - Steps 1-5: SLS transformations with calculations
+        - Steps 1-9b: Complete SLS algorithm (identification, alignment, rotation, position, verification, collision)
         - OUTPUT: position, rotation, scale
         - KEY TAKEAWAYS: Educational notes
 
@@ -362,7 +436,7 @@ components:
         ## 3. Provide Corrected Example
         - Explain what was wrong
         - Show corrected calculation
-        - Provide complete corrected Steps 0-5
+        - Provide complete corrected Steps 0-9b
 
     auto_enable_logic: |
       void AutoEnableSceneBuilderPrompts()
@@ -506,46 +580,115 @@ components:
 
   example_mode_workflow:
     overview: |
-      AI-driven diagnostic and refinement workflow using tool calls.
-      AI autonomously saves/updates files - no user "save" commands needed.
+      AI-driven diagnostic workflow with manual save and rerun controls.
+      Example files are supplementary teaching material (complete SLS Steps 0-9b).
+      AI uses tool calls to propose changes; user controls when to save and test.
 
-    step_1_create_new:
+    key_principles:
+      - Examples are text files (Steps 0-9b format) that teach AI correct SLS usage
+      - AI calls savePromptFile tool → Creates SavePromptFileAction (pending, not saved)
+      - Preview pane shows pending content
+      - User clicks "Save Example" button → Writes to disk + auto-enables
+      - User clicks "Rerun Prompt" button → Re-tests with updated example
+      - System auto-injects "Describe any issues" after scene actions execute
+      - Manual exit only (no auto-exit)
+
+    create_new_flow:
       user_action: Enter name → Click "Create New Example"
-      flow: |
-        1. User enters example name (e.g., "lamp_on_table")
-        2. Click "Create New Example" button
-        3. Window calls EnterExampleMode(null)
-        4. Auto-enables: sls_detailed_guide.txt, example_generation_instructions.txt
-        5. User describes scenario: "Show placing lamp on table using semantic alignment"
-        6. AI generates example following instructions
-        7. AI calls savePromptFile tool with content
-        8. Window executes SavePromptFileAction
-        9. File created at Examples/{category}/{name}.txt
-        10. File auto-enabled in prompt library tree
+      detailed_steps:
+        step_1:
+          action: User enters "lamp_on_table" → Click "Create New Example"
+          result: EnterExampleMode(null), system asks "What do you want to do?"
 
-    step_2_refine_existing:
+        step_2:
+          action: User types "Place a lamp on the table"
+          result: Stored as _testPrompt for reuse
+
+        step_3:
+          action: AI responds
+          result: |
+            - Calls savePromptFile tool with example content
+            - SavePromptFileAction created (content in memory, NOT saved to disk)
+            - Preview pane shows pending content
+            - "Save Example" button enabled
+
+        step_4:
+          action: User clicks "Save Example"
+          result: |
+            - Execute SavePromptFileAction
+            - Write file to disk at Examples/{category}/{name}.txt
+            - Auto-enable in PromptLibrarySettings
+            - Set autoEnabled = true
+            - "Rerun Prompt" button enabled
+
+        step_5:
+          action: User clicks "Rerun Prompt"
+          result: |
+            - Re-submit _testPrompt: "Place a lamp on the table"
+            - AI responds with instantiateObjects/modifyGameObject tool calls
+            - Example file now enabled, AI uses it as teaching reference
+
+        step_6:
+          action: User approves scene actions (checkboxes + Execute Selected)
+          result: |
+            - Objects appear in scene
+            - System auto-injects: "Describe any issues you see with the results"
+            - _hasTestedOnce = true
+
+        step_7_diagnostic_loop:
+          description: User iterates on problems, can save/rerun many times
+          iteration_example: |
+            User: "The lamp is floating above the table"
+            AI: Analyzes issue, calls savePromptFile with corrected example
+            Preview: Shows updated content (not saved)
+            User: Clicks "Save Example" → Overwrites file
+            User: Clicks "Rerun Prompt" → Re-tests
+            AI: Returns scene tool calls using corrected example
+            User: Approves → Objects appear
+            System: "Describe any issues..."
+            [Loop continues until satisfied]
+
+        step_8:
+          action: User clicks "Exit Example Mode"
+          result: Returns to Scene Builder, clears state
+
+    refine_existing_flow:
       user_action: Select prompt → Click "Refine Selected Example"
-      flow: |
-        1. User selects existing example in tree (e.g., "lamp_on_table.txt")
-        2. Click "Refine Selected Example" button
-        3. Window calls EnterExampleMode(_selectedPromptPath)
-        4. Auto-enables: sls_detailed_guide.txt, debug_guide.txt
-        5. Window loads existing file content into conversation
-        6. User reports issue: "The lamp is floating instead of on surface"
-        7. AI analyzes using debug_guide.txt
-        8. AI identifies problem (missing semantic alignment)
-        9. AI generates corrected example
-        10. AI calls savePromptFile tool with fixed content
-        11. Window executes SavePromptFileAction (overwrites file)
-        12. Updated file shown in preview pane
+      detailed_steps:
+        step_1:
+          action: Select "lamp_on_table.txt" → Click "Refine Selected Example"
+          result: |
+            - EnterExampleMode(path)
+            - Load existing file content into _exampleModeContent
+            - System asks: "What test prompt should we use?"
 
-    step_3_exit:
-      user_action: Click "Exit Example Mode" button
-      behavior: |
-        - Returns to Scene Builder mode
-        - Auto-enables basic_instructions.txt
-        - Auto-disables sls_detailed_guide.txt, example_generation_instructions.txt
-        - Conversation state preserved (response ID maintained)
+        step_2:
+          action: User types "Place a lamp on the table"
+          result: Stored as _testPrompt
+
+        step_3_onwards:
+          description: Same as Create New flow from step 3
+          note: |
+            - AI sees existing example in context via exampleModeContent parameter
+            - Can generate improved version
+            - Preview → Save → Rerun → Diagnose loop identical to Create
+
+    diagnostic_loop_details:
+      purpose: Common iteration loop for both Create and Refine
+      can_iterate: Multiple times per session (no limit on saves)
+      exit_condition: Manual only (user clicks Exit Example Mode button)
+
+      typical_cycle: |
+        1. User describes problem (e.g., "floating", "wrong rotation")
+        2. AI analyzes and calls savePromptFile with fix
+        3. Preview pane updates (not saved yet)
+        4. User reviews content in preview
+        5. User clicks "Save Example" → Disk write
+        6. User clicks "Rerun Prompt" → Test with updated example
+        7. AI responds with scene tool calls (using updated example)
+        8. User executes → Objects appear
+        9. System injects: "Describe any issues..."
+        10. Repeat from step 1 or exit
 
   # ============================================================================
   # 5. UNITY 6 COMPATIBILITY
@@ -699,40 +842,248 @@ components:
 
     example_mode:
       test_1: |
-        Create new example flow:
-        - Enter name → Create button → Describe scenario
-        - AI calls savePromptFile tool → File created
+        Create new example flow with manual save:
+        - Enter name → Create button → Send test prompt "place lamp on table"
+        - AI executes scene actions and system auto-injects "Describe any issues"
+        - AI diagnoses and calls savePromptFile tool → SavePromptFileAction created in _pendingActions
+        - Verify "Save Example" button becomes enabled (green tint)
+        - Verify "Rerun Prompt" button is disabled (greyed out)
+        - Verify preview pane shows pending content with "Pending changes (not saved)" header
+        - Click "Save Example" button → File written to disk
         - Verify file exists at correct path
-        - Verify auto-enabled in tree
+        - Verify auto-enabled in tree (checkbox checked)
+        - Verify "Rerun Prompt" button now enabled (blue tint)
+        - Verify _hasTestedOnce == true
+
       test_2: |
-        Refine existing example flow:
-        - Select prompt → Refine button → Report error
-        - AI diagnoses → Calls savePromptFile tool → File updated
-        - Verify file content corrected
-        - Verify preview pane shows update
+        Rerun prompt for iterative refinement:
+        - After test_1, click "Rerun Prompt" button
+        - Verify original test prompt "place lamp on table" resent automatically
+        - Verify conversation logs cleared before resend
+        - AI re-executes scene actions and system auto-injects "Describe any issues" again
+        - AI may call savePromptFile again if issues found
+        - Click "Save Example" again if new changes proposed
+        - Cycle repeats until user satisfied
+        - Manual exit via "Exit Example Mode" button
+
       test_3: |
+        Refine existing example flow:
+        - Select prompt in tree → "Refine Selected Example" button
+        - Selected example content passed to AI via ContextBuilder
+        - Send test prompt "test the lamp placement example"
+        - AI executes, system injects "Describe any issues"
+        - AI diagnoses error and calls savePromptFile tool
+        - Verify preview shows pending changes
+        - Click "Save Example" → Original file overwritten
+        - Click "Rerun Prompt" to verify fix
+        - Manual exit when satisfied
+
+      test_4: |
+        Button state management:
+        - Enter Example Mode → Both buttons disabled
+        - Send test prompt → AI calls savePromptFile → Save button enabled, Rerun disabled
+        - Click Save → Save button disabled (no pending action), Rerun enabled
+        - Click Rerun → Cycle repeats
+        - If AI doesn't call savePromptFile on rerun → Save stays disabled, Rerun stays enabled
+
+      test_5: |
+        Preview pane priority:
+        - Select prompt in tree → Preview shows selected content
+        - AI calls savePromptFile → Preview switches to pending content
+        - Click Save → Preview updates to show "Saved successfully" confirmation
+        - After brief delay → Preview returns to tree selection
+
+      test_6: |
         Auto-enable prompts on enter:
         - Enter Example Mode → Verify sls_detailed_guide.txt enabled
         - Exit Example Mode → Verify basic_instructions.txt re-enabled
-      test_4: |
+
+      test_7: |
         Path validation security:
-        - AI attempts "../../../etc/passwd" → Action fails
-        - AI attempts "C:\Windows\system32\file.txt" → Action fails
+        - AI attempts "../../../etc/passwd" → Action fails gracefully
+        - AI attempts "C:\Windows\system32\file.txt" → Action fails (rooted path)
+        - AI attempts "Examples/Furniture/test.md" → Action fails (.txt only)
         - AI uses valid path "Examples/Furniture/test.txt" → Success
-      test_5: |
+
+      test_8: |
         File overwrite handling:
         - AI saves to existing filename → File overwritten (no confirmation needed)
         - Original content replaced with new content
-      test_6: |
+        - Tree refreshes and shows updated timestamp
+
+      test_9: |
         Exit restores Scene Builder state:
         - Example Mode → Exit → Verify Scene Builder prompts active
         - Response ID and logs preserved
+        - _testPrompt and _hasTestedOnce reset for next Example Mode session
 
     prompt_library:
       test_1: Tree shows all prompts
       test_2: Checkboxes persist
       test_3: Selection shows preview
       test_4: Refresh updates tree
+
+# ==============================================================================
+# IMPLEMENTATION PLAN
+# ==============================================================================
+
+implementation_plan:
+  overview: |
+    Three-phase implementation with Phase 1 and 2 already completed.
+    Phase 3 adds Example Mode with tool-based workflow for creating and refining examples.
+
+  phase_1_completed:
+    status: ✓ DONE
+    description: Prompt library infrastructure and three-column layout foundation
+    tasks_completed:
+      - Created PromptLibrary folder structure (Core, Examples, Diagnostics, Reference)
+      - Moved SLS_MATH_README.md → Core/sls_detailed_guide.txt
+      - Created basic_instructions.txt and example_generation_instructions.txt
+      - Modified ContextBuilder to load system messages from prompt files
+      - Added autoEnabled field to PromptLibrarySettings
+      - Set up initial prompt library with Steps 0-9b examples
+
+  phase_2_completed:
+    status: ✓ DONE
+    description: Three-column UI with dark mode and state management
+    tasks_completed:
+      - Implemented three-column layout (40% / 30% / 30%)
+      - Added prompt library tree view with checkboxes
+      - Added preview pane for selected prompts
+      - Implemented dark mode styling throughout
+      - Added Unity 6 serialization for mode state persistence
+      - Fixed GUI errors (NullReferenceException, GUILayout mismatches)
+
+  phase_3_pending:
+    status: READY TO IMPLEMENT
+    description: Example Mode with savePromptFile tool and manual save/rerun controls
+    estimated_effort: 14-15 hours
+
+    tasks:
+      1_create_save_action:
+        file: Assets/ContextAwareSceneBuilder/Actions/SavePromptFileAction.cs
+        description: Create IAction implementation for savePromptFile tool
+        steps:
+          - Create new SavePromptFileAction class implementing IAction
+          - Add properties (RelativePath, Content, Reason)
+          - Implement security validation (no "..", no rooted paths, .txt extension only)
+          - Implement Execute() to write file and auto-enable in settings
+          - Return ActionResult with success/failure status
+        estimated_time: 2 hours
+
+      2_add_tool_definition:
+        file: Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/DynamicToolGenerator.cs
+        description: Add savePromptFile as 6th tool in tool definitions
+        steps:
+          - Add GenerateSavePromptFileTool() method using StringBuilder pattern
+          - Include relativePath, content, reason parameters
+          - Add descriptive documentation for AI understanding
+          - Register in GetToolDefinitions() method
+        estimated_time: 1 hour
+
+      3_add_tool_parsing:
+        file: Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/DynamicPlanApplier.cs
+        description: Parse savePromptFile tool calls and create SavePromptFileAction
+        steps:
+          - Add case "savePromptFile" to ParseToolCall() method
+          - Extract relativePath, content, reason using JSONNode.Value pattern
+          - Create and return SavePromptFileAction instance
+          - Handle missing parameters gracefully
+        estimated_time: 1 hour
+
+      4_add_settings_api:
+        file: Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/Settings/PromptLibrarySettings.cs
+        description: Add public API to set autoEnabled field
+        steps:
+          - Add SetPromptAutoEnabled(relativePath, autoEnabled) method
+          - Find prompt by relativePath in _prompts list
+          - Update autoEnabled field and mark dirty
+          - Call AssetDatabase.SaveAssets()
+        estimated_time: 30 minutes
+
+      5_add_example_mode_fields:
+        file: Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/AIAssistantWindow.cs
+        description: Add fields for Example Mode state tracking
+        steps:
+          - Add _testPrompt field (stores initial test prompt for rerun)
+          - Add _hasTestedOnce field (enables Rerun button after first save)
+          - Initialize in EnterExampleMode() and reset properly
+          - Update on first send in Example Mode
+        estimated_time: 30 minutes
+
+      6_add_save_button:
+        file: Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/AIAssistantWindow.cs
+        description: Implement Save Example button UI and behavior
+        steps:
+          - Add button to conversation column below prompt input (left half)
+          - Enable only when SavePromptFileAction exists in _pendingActions
+          - Implement OnSaveExample() handler
+          - Execute action, update settings, refresh prompt list
+          - Set _hasTestedOnce = true to enable Rerun button
+          - Update preview pane with success confirmation
+        estimated_time: 2 hours
+
+      7_add_rerun_button:
+        file: Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/AIAssistantWindow.cs
+        description: Implement Rerun Prompt button UI and behavior
+        steps:
+          - Add button next to Save button (right half of row)
+          - Enable only when _hasTestedOnce == true AND _testPrompt not empty
+          - Implement OnRerunPrompt() handler
+          - Clear conversation logs and resend _testPrompt
+          - Ensure system auto-injects "Describe any issues" after scene actions
+        estimated_time: 2 hours
+
+      8_update_preview_priority:
+        file: Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/AIAssistantWindow.cs
+        description: Update preview pane to prioritize pending SavePromptFileAction
+        steps:
+          - Check _pendingActions for SavePromptFileAction first
+          - Display pending content with "Pending changes (not saved)" header
+          - Fall back to selected prompt content if no pending action
+          - Add visual distinction for pending vs saved content
+        estimated_time: 1 hour
+
+      9_extend_context_builder:
+        file: Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/ContextBuilder.cs
+        description: Add exampleModeContent parameter for refine workflow
+        steps:
+          - Add optional exampleModeContent parameter to BuildContextPack()
+          - Inject example content into system message when provided
+          - Update all callers to pass null for Scene Builder Mode
+          - Pass selected example content when entering Example Mode via Refine button
+        estimated_time: 1.5 hours
+
+      10_create_diagnostic_prompt:
+        file: Assets/ContextAwareSceneBuilder/PromptLibrary/Diagnostics/debug_guide.txt
+        description: Create or update debug guide for example diagnostics
+        steps:
+          - Document SLS Steps 0-9b verification checklist
+          - Add common error patterns (floating objects, wrong alignment, etc.)
+          - Include fix patterns for each error type
+          - Add semantic relationship verification guide
+        estimated_time: 2 hours
+
+      11_integration_testing:
+        description: Test complete Example Mode workflow end-to-end
+        steps:
+          - Test "Create New Example" flow with savePromptFile tool call
+          - Verify Save Example button enables and saves correctly
+          - Test Rerun Prompt button with iterative refinements
+          - Verify preview pane shows pending content correctly
+          - Test "Refine Selected Example" with existing example content
+          - Verify system message injection ("Describe any issues")
+          - Test manual exit from Example Mode
+        estimated_time: 3 hours
+
+    dependencies:
+      - Tasks 1-4 can be done in parallel (independent)
+      - Task 5 must complete before tasks 6-7
+      - Task 6 must complete before task 7 (Rerun depends on _hasTestedOnce set by Save)
+      - Task 8 can be done after task 1 (needs SavePromptFileAction class)
+      - Task 9 can be done in parallel with most tasks
+      - Task 10 can be done anytime
+      - Task 11 requires all previous tasks complete
 
 files_summary:
   new_files:
@@ -786,11 +1137,11 @@ notes:
 
   why_tool_based_saving: |
     AI-driven workflow is more powerful than user-typed commands:
-    - AI can autonomously diagnose and fix errors without user intervention
+    - AI can autonomously diagnose and propose fixes via tool calls
     - No parsing ambiguity ("save as X in Y" vs "save to X.txt" vs other variants)
     - AI provides structured 'reason' field explaining each change
     - Enables batch corrections (AI could potentially fix multiple related examples)
-    - Better UX: user describes problem → AI analyzes → AI fixes → file saved automatically
+    - Better UX: user describes problem → AI analyzes → AI proposes fix → user saves
     - Tool call provides strong typing and validation (relativePath, content, reason)
     - Eliminates need for ExtractExampleFromConversation() heuristics
 
@@ -798,4 +1149,75 @@ notes:
     User: "The lamp example is wrong, it's floating"
     AI: *Analyzes with debug_guide.txt → Identifies missing semantic alignment*
     AI: *Calls savePromptFile("Examples/Furniture/lamp_on_table.txt", corrected_content, "Fixed floating lamp by using semantic bottom→top alignment")*
-    Window: *Executes action → File saved → User sees update*
+    Window: *Creates pending action → Preview shows changes → User clicks "Save Example"*
+
+  why_manual_save_rerun: |
+    While the AI uses tool calls to propose changes, the actual save operation is
+    controlled by manual buttons ("Save Example" and "Rerun Prompt"). This design
+    provides several critical benefits:
+
+    1. USER CONTROL & REVIEW:
+       - User can review AI's proposed changes in preview pane before committing
+       - Prevents unwanted file modifications from being written immediately
+       - User has final say over what gets saved to disk
+       - Supports cautious users who want to verify changes first
+
+    2. ITERATIVE REFINEMENT WORKFLOW:
+       - "Rerun Prompt" button enables testing the same prompt repeatedly
+       - No need to retype test prompts between diagnostic cycles
+       - Clear visual feedback (button states) about workflow progress
+       - User controls when to iterate vs when to exit
+
+    3. CLEAR STATE MANAGEMENT:
+       - Button states communicate system status clearly:
+         * Save button enabled = AI has proposed changes (pending)
+         * Save button disabled = No pending changes
+         * Rerun button enabled = Test has been saved at least once
+         * Rerun button disabled = Haven't saved yet
+       - Explicit actions (clicks) rather than implicit auto-saves
+       - No ambiguity about whether changes have been written to disk
+
+    4. PREVENTS PREMATURE SAVES:
+       - AI might propose intermediate solutions during multi-turn refinement
+       - User can continue conversation to refine proposal before saving
+       - Avoids disk thrashing from multiple rapid file writes
+       - User decides when proposal is "good enough" to commit
+
+    5. SEPARATION OF CONCERNS:
+       - AI focuses on diagnosis and solution generation (tool calls)
+       - User focuses on approval and testing (button clicks)
+       - System manages state (pending actions, test prompts)
+       - Clean architectural boundaries between AI and user control
+
+    Example workflow demonstrating the value:
+    1. User: "place a lamp on the table"
+    2. AI: *Executes → System injects "Describe issues"*
+    3. AI: "Lamp is floating 0.5m above table"
+    4. AI: *Calls savePromptFile with proposed fix*
+    5. User: *Reviews preview* "Hmm, that's not quite right..."
+    6. User: "Actually, use semantic alignment instead of world position"
+    7. AI: *Calls savePromptFile again with refined fix*
+    8. User: *Reviews preview* "Perfect!" → Clicks "Save Example"
+    9. User: Clicks "Rerun Prompt" to verify the fix works
+    10. AI: *Re-executes same test* "No issues found"
+    11. User: Clicks "Exit Example Mode"
+
+    Without manual controls, step 5-7 would require file rollback or complex undo.
+    With manual controls, nothing was written until user approved at step 8.
+
+  why_steps_0_to_9b: |
+    The SLS (Semantic Local Space) algorithm is a complete 10-step process (Steps 0-9b)
+    that handles all aspects of semantic object placement:
+
+    - Step 0: Semantic point identification (finding valid attachment points)
+    - Steps 1-3: Local space calculation (alignment vector, rotation, position)
+    - Steps 4-7: Collision handling (ray tests, offset calculations)
+    - Steps 8-9b: Verification and final placement
+
+    Early versions of this architecture incorrectly referenced "Steps 0-5", which only
+    covered the basic placement logic without collision handling or verification.
+    Teaching examples must include the complete algorithm (Steps 0-9b) to ensure AI
+    generates robust, production-quality placements that handle edge cases correctly.
+
+    Incomplete examples (0-5) led to floating objects, collision failures, and
+    incorrect semantic relationships. Complete examples (0-9b) produce reliable results.
