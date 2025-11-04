@@ -36,6 +36,51 @@ overview: |
 components:
 
   # ============================================================================
+  # 0. TOOL DEFINITIONS
+  # ============================================================================
+
+  tool_definitions:
+    overview: |
+      6 total tools provided to AI for scene building and example management:
+      1. instantiateObjects - Batch object creation from prefab catalog
+      2. modifyGameObject - Modify transforms/components of existing objects
+      3. deleteGameObject - Delete objects from scene
+      4. addComponent - Add Unity components to objects
+      5. removeComponent - Remove Unity components from objects
+      6. savePromptFile - Save/update prompt library teaching examples (NEW for Example Mode)
+
+    savePromptFile_tool:
+      description: |
+        Allows AI to autonomously save or replace prompt library teaching examples.
+        Used in Example Mode for diagnostic and refinement workflows.
+        AI calls this tool directly - no user "save" commands needed.
+
+      json_schema: |
+        {
+          "type": "function",
+          "name": "savePromptFile",
+          "description": "Save or update a prompt library file. Use this to create new teaching examples or fix incorrect existing examples.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "relativePath": {
+                "type": "string",
+                "description": "Relative path in PromptLibrary (e.g., 'Examples/Furniture/lamp_on_table.txt')"
+              },
+              "content": {
+                "type": "string",
+                "description": "Full content of the prompt file with proper SLS example format"
+              },
+              "reason": {
+                "type": "string",
+                "description": "Explanation of what was corrected or why this example was created"
+              }
+            },
+            "required": ["relativePath", "content", "reason"]
+          }
+        }
+
+  # ============================================================================
   # 1. THREE-COLUMN LAYOUT STRUCTURE
   # ============================================================================
 
@@ -67,22 +112,25 @@ components:
         - Chat log (scrollable conversation history)
         - Prompt input field (60px height)
         - Submit button (Ctrl+Enter shortcut)
-        - Settings section:
-            - "Send scene context" checkbox
-            - "Send prefab catalog" checkbox
+        - |
+          Settings section:
+          - "Send scene context" checkbox
+          - "Send prefab catalog" checkbox
         - "Exit Example Mode" button (greyed out when in Scene Builder mode)
 
     middle_column:
       width: 30%
       components:
-        - Tree view (70% of column height):
-            - Folder hierarchy with checkboxes
-            - Enable/disable prompts
-            - Select for preview
-        - Bottom section (30% of column height):
-            - Text field for new example name
-            - "Create New Example" button
-            - "Refine Selected Example" button (disabled if no selection)
+        - |
+          Tree view (70% of column height):
+          - Folder hierarchy with checkboxes
+          - Enable/disable prompts
+          - Select for preview
+        - |
+          Bottom section (30% of column height):
+          - Text field for new example name
+          - "Create New Example" button
+          - "Refine Selected Example" button (disabled if no selection)
 
     right_column:
       width: 30%
@@ -409,112 +457,95 @@ components:
       }
 
   # ============================================================================
-  # 4. EXAMPLE MODE WORKFLOW
+  # 4. ACTIONS (SAVE PROMPT FILE)
+  # ============================================================================
+
+  actions:
+    SavePromptFileAction:
+      purpose: Execute savePromptFile tool calls from AI
+      file: Actions/SavePromptFileAction.cs
+
+      properties:
+        - RelativePath: string (e.g., "Examples/Furniture/lamp_on_table.txt")
+        - Content: string (full prompt file content)
+        - Reason: string (explanation from AI)
+
+      execute_logic: |
+        1. Validate path security:
+           - Reject if contains ".."
+           - Reject if rooted path (C:\, /)
+           - Require .txt extension
+
+        2. Resolve full path:
+           - Use PromptLibraryLoader.GetFullPath(RelativePath)
+
+        3. Create directory if needed:
+           - Extract directory path
+           - Directory.CreateDirectory()
+
+        4. Write file:
+           - File.WriteAllText(fullPath, Content)
+           - AssetDatabase.Refresh(ImportAssetOptions.Default)
+
+        5. Auto-enable in settings:
+           - PromptLibrarySettings.SetPromptEnabled(RelativePath, true)
+           - Find PromptReference, set autoEnabled = true
+
+        6. Return result:
+           - Success: Include saved path in message
+           - Failure: Include error details
+
+      preview_mode: |
+        - Log would-be file path and content preview
+        - Do not actually write file
+        - Return success with preview message
+
+  # ============================================================================
+  # 5. EXAMPLE MODE WORKFLOW
   # ============================================================================
 
   example_mode_workflow:
-    step_1_generate:
-      user_action: Type prompt and submit
-      example: "Generate example: box under table using box.top → table.bottom"
-      implementation: |
-        void HandleExampleModePrompt(string prompt)
-        {
-            // Detect error reports
-            if (IsErrorReport(prompt))
-            {
-                AutoEnableDebugGuide();
-            }
+    overview: |
+      AI-driven diagnostic and refinement workflow using tool calls.
+      AI autonomously saves/updates files - no user "save" commands needed.
 
-            // Detect save request
-            if (IsSaveRequest(prompt))
-            {
-                SaveExample(prompt);
-                return; // Don't exit mode - user can continue iterating
-            }
+    step_1_create_new:
+      user_action: Enter name → Click "Create New Example"
+      flow: |
+        1. User enters example name (e.g., "lamp_on_table")
+        2. Click "Create New Example" button
+        3. Window calls EnterExampleMode(null)
+        4. Auto-enables: sls_detailed_guide.txt, example_generation_instructions.txt
+        5. User describes scenario: "Show placing lamp on table using semantic alignment"
+        6. AI generates example following instructions
+        7. AI calls savePromptFile tool with content
+        8. Window executes SavePromptFileAction
+        9. File created at Examples/{category}/{name}.txt
+        10. File auto-enabled in prompt library tree
 
-            // Otherwise, send to OpenAI with Example Mode context
-            SendToOpenAI(prompt);
-        }
-
-        bool IsErrorReport(string prompt)
-        {
-            string lower = prompt.ToLower();
-            return lower.Contains("wrong") || lower.Contains("error") ||
-                   lower.Contains("floating") || lower.Contains("incorrect");
-        }
-
-        bool IsSaveRequest(string prompt)
-        {
-            return prompt.StartsWith("save", StringComparison.OrdinalIgnoreCase);
-        }
-
-    step_2_save:
-      user_action: Type "Save as {name} in {category}"
-      example: "Save as box_under_table in Furniture"
-      implementation: |
-        void SaveExample(string prompt)
-        {
-            // Parse: "Save as lamp_on_table in Furniture"
-            // OR: "Save" (use _newExampleName and default category)
-
-            var match = Regex.Match(prompt,
-                @"save\s+(?:as\s+)?([\w\-]+)(?:\.txt)?\s+(?:in|to)\s+(?:Examples/)?([\w\-]+)",
-                RegexOptions.IgnoreCase);
-
-            string name = match.Success ? match.Groups[1].Value : _newExampleName;
-            string category = match.Success ? match.Groups[2].Value : "Core";
-
-            // Validate category exists
-            string categoryPath = $"Assets/ContextAwareSceneBuilder/PromptLibrary/Examples/{category}";
-            if (!AssetDatabase.IsValidFolder(categoryPath))
-            {
-                AppendLog($"[Error] Category '{category}' not found. Available: Core, Furniture, Walls",
-                    LogType.Error, Color.red);
-                return;
-            }
-
-            // Extract example from conversation
-            string exampleContent = ExtractExampleFromConversation();
-
-            // Algorithm: ExtractExampleFromConversation()
-            // 1. Find the last assistant message in CurrentState.logs
-            // 2. Look for code blocks marked with ```yaml or ```
-            // 3. Extract the content between the markers
-            // 4. If no code block found, return entire last assistant message
-            // 5. Add metadata header: "EXAMPLE: {name}\n\n" + extracted content
-
-            // Check for overwrite
-            string relativePath = $"PromptLibrary/Examples/{category}/{name}.txt";
-            string fullPath = $"{categoryPath}/{name}.txt";
-
-            if (File.Exists(fullPath))
-            {
-                if (!EditorUtility.DisplayDialog("Overwrite?",
-                    $"Prompt '{name}' already exists. Overwrite?",
-                    "Overwrite", "Cancel"))
-                    return;
-            }
-
-            // Write file
-            File.WriteAllText(fullPath, exampleContent);
-            AssetDatabase.Refresh(ImportAssetOptions.Default);
-
-            // Auto-enable the new prompt
-            var settings = PromptLibrarySettings.GetOrCreateSettings();
-            settings.SetPromptEnabled(relativePath, true);
-            var reference = settings.prompts.Find(p => p.relativePath == relativePath);
-            if (reference != null)
-                reference.autoEnabled = true;
-
-            AppendLog($"✓ Saved example to {relativePath}", LogType.Success, Color.green);
-            RefreshPromptList();
-
-            // Don't exit mode - user can continue refining
-        }
+    step_2_refine_existing:
+      user_action: Select prompt → Click "Refine Selected Example"
+      flow: |
+        1. User selects existing example in tree (e.g., "lamp_on_table.txt")
+        2. Click "Refine Selected Example" button
+        3. Window calls EnterExampleMode(_selectedPromptPath)
+        4. Auto-enables: sls_detailed_guide.txt, debug_guide.txt
+        5. Window loads existing file content into conversation
+        6. User reports issue: "The lamp is floating instead of on surface"
+        7. AI analyzes using debug_guide.txt
+        8. AI identifies problem (missing semantic alignment)
+        9. AI generates corrected example
+        10. AI calls savePromptFile tool with fixed content
+        11. Window executes SavePromptFileAction (overwrites file)
+        12. Updated file shown in preview pane
 
     step_3_exit:
       user_action: Click "Exit Example Mode" button
-      behavior: Returns to Scene Builder mode, restores conversation state
+      behavior: |
+        - Returns to Scene Builder mode
+        - Auto-enables basic_instructions.txt
+        - Auto-disables sls_detailed_guide.txt, example_generation_instructions.txt
+        - Conversation state preserved (response ID maintained)
 
   # ============================================================================
   # 5. UNITY 6 COMPATIBILITY
@@ -572,7 +603,7 @@ components:
   # ============================================================================
 
   implementation_phases:
-    total_hours: 16-18 hours
+    total_hours: 18-22 hours
 
     phase_1_extract_prompts:
       hours: 2
@@ -606,23 +637,28 @@ components:
         - State survives domain reload
 
     phase_3_example_mode:
-      hours: 6
+      hours: 8-10
       tasks:
+        - Add savePromptFile tool to DynamicToolGenerator.cs (6th tool)
+        - Create Actions/SavePromptFileAction.cs implementing IAction
+        - Update DynamicPlanApplier.cs to parse savePromptFile tool calls
         - Implement EnterExampleMode() / OnExitExampleMode()
-        - Implement auto-enable prompt logic
-        - Implement HandleExampleModePrompt() routing
-        - Implement SaveExample() with validation
-        - Implement error detection (IsErrorReport)
-        - Implement ExtractExampleFromConversation()
-        - Add colored mode transition messages
-        - Add mode indicator in conversation column header
+        - Implement auto-enable prompt logic (AutoEnableExampleModePrompts, AutoEnableSceneBuilderPrompts)
+        - Add TryEnablePrompt() and TryDisablePrompt() helpers
+        - Update OnCreateNewExample() to call EnterExampleMode(null)
+        - Update OnRefineSelectedExample() to call EnterExampleMode(_selectedPromptPath)
+        - Add SavePromptFileAction result handling in OnExecuteSelected()
+        - Add path validation security checks in SavePromptFileAction
+        - Create or rename debug_guide.txt file
       validation:
-        - Can enter Example Mode (button works)
-        - Correct prompts auto-enable
-        - Can save examples
-        - Category validation works
-        - Overwrite confirmation shows
-        - Exit returns to Scene Builder
+        - AI can call savePromptFile tool successfully
+        - SavePromptFileAction creates files in correct directories
+        - Path validation prevents directory traversal attacks
+        - Files auto-enable in prompt library tree after save
+        - Create New Example enters mode and AI generates content
+        - Refine Selected loads existing content and AI fixes errors
+        - Exit returns to Scene Builder with correct prompts enabled
+        - State survives domain reload
 
     phase_4_context_integration:
       hours: 2
@@ -662,13 +698,35 @@ components:
       test_4: Multi-turn conversation continuity
 
     example_mode:
-      test_1: Create new example flow complete
-      test_2: Refine existing example flow complete
-      test_3: Auto-enable prompts on enter
-      test_4: Auto-enable debug guide on error
-      test_5: Save validation works
-      test_6: Overwrite confirmation works
-      test_7: Exit restores Scene Builder state
+      test_1: |
+        Create new example flow:
+        - Enter name → Create button → Describe scenario
+        - AI calls savePromptFile tool → File created
+        - Verify file exists at correct path
+        - Verify auto-enabled in tree
+      test_2: |
+        Refine existing example flow:
+        - Select prompt → Refine button → Report error
+        - AI diagnoses → Calls savePromptFile tool → File updated
+        - Verify file content corrected
+        - Verify preview pane shows update
+      test_3: |
+        Auto-enable prompts on enter:
+        - Enter Example Mode → Verify sls_detailed_guide.txt enabled
+        - Exit Example Mode → Verify basic_instructions.txt re-enabled
+      test_4: |
+        Path validation security:
+        - AI attempts "../../../etc/passwd" → Action fails
+        - AI attempts "C:\Windows\system32\file.txt" → Action fails
+        - AI uses valid path "Examples/Furniture/test.txt" → Success
+      test_5: |
+        File overwrite handling:
+        - AI saves to existing filename → File overwritten (no confirmation needed)
+        - Original content replaced with new content
+      test_6: |
+        Exit restores Scene Builder state:
+        - Example Mode → Exit → Verify Scene Builder prompts active
+        - Response ID and logs preserved
 
     prompt_library:
       test_1: Tree shows all prompts
@@ -678,18 +736,21 @@ components:
 
 files_summary:
   new_files:
-    - PromptLibrary/Core/basic_instructions.txt (extracted from ContextBuilder)
-    - PromptLibrary/Core/example_generation_instructions.txt (new)
-    - PromptLibrary/Diagnostics/debug_guide.txt (new)
+    - Actions/SavePromptFileAction.cs (Phase 3 - NEW for tool-based workflow)
+    - PromptLibrary/Core/basic_instructions.txt (Phase 1 - extracted from ContextBuilder)
+    - PromptLibrary/Core/example_generation_instructions.txt (Phase 1)
+    - PromptLibrary/Diagnostics/debug_guide.txt (Phase 3 - create or rename from analyze_error.txt)
     - PromptLibrary/README.md (documentation)
 
   moved_files:
-    - SLS_MATH_README.md → PromptLibrary/Core/sls_detailed_guide.txt
+    - SLS_MATH_README.md → PromptLibrary/Core/sls_detailed_guide.txt (Phase 1)
 
   modified_files:
-    - AIAssistantWindow.cs (major - three columns + Example Mode + serialization)
-    - ContextBuilder.cs (major - prompt-based system messages)
-    - PromptLibrarySettings.cs (minor - add autoEnabled field)
+    - AIAssistantWindow.cs (Phase 2 & 3 - three columns + Example Mode + serialization)
+    - DynamicToolGenerator.cs (Phase 3 - add 6th tool: savePromptFile)
+    - DynamicPlanApplier.cs (Phase 3 - parse savePromptFile tool calls)
+    - ContextBuilder.cs (Phase 1 - prompt-based system messages)
+    - PromptLibrarySettings.cs (Phase 1 - add autoEnabled field)
 
   unchanged_files:
     - PromptLibraryLoader.cs ✓
@@ -704,6 +765,7 @@ notes:
     3. Prompt-based system messages - all instructions in editable .txt files
     4. Unity 6 serialization - List<ModeState> survives domain reloads
     5. Single conversation - one chat log shared between Scene Builder and Example Mode
+    6. Tool-based file saving - AI directly calls savePromptFile tool (NOT user commands)
 
   why_three_columns: |
     Three-column layout keeps all functionality accessible without mode switching.
@@ -721,3 +783,19 @@ notes:
     require code recompilation to modify. Moving instructions to .txt files
     makes them discoverable, editable, and version-controllable. Users can
     create custom instruction sets without touching code.
+
+  why_tool_based_saving: |
+    AI-driven workflow is more powerful than user-typed commands:
+    - AI can autonomously diagnose and fix errors without user intervention
+    - No parsing ambiguity ("save as X in Y" vs "save to X.txt" vs other variants)
+    - AI provides structured 'reason' field explaining each change
+    - Enables batch corrections (AI could potentially fix multiple related examples)
+    - Better UX: user describes problem → AI analyzes → AI fixes → file saved automatically
+    - Tool call provides strong typing and validation (relativePath, content, reason)
+    - Eliminates need for ExtractExampleFromConversation() heuristics
+
+    Example:
+    User: "The lamp example is wrong, it's floating"
+    AI: *Analyzes with debug_guide.txt → Identifies missing semantic alignment*
+    AI: *Calls savePromptFile("Examples/Furniture/lamp_on_table.txt", corrected_content, "Fixed floating lamp by using semantic bottom→top alignment")*
+    Window: *Executes action → File saved → User sees update*
