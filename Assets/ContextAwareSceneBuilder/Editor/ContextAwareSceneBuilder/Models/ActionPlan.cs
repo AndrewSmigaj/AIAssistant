@@ -28,6 +28,18 @@ namespace ContextAwareSceneBuilder.Editor
         public List<IAction> Actions;
 
         /// <summary>
+        /// Relative path for pending file save (from savePromptFile tool call).
+        /// Null if no save is pending. Example: "Examples/Furniture/lamp_on_table.txt"
+        /// </summary>
+        public string PendingSavePath;
+
+        /// <summary>
+        /// Content for pending file save (from savePromptFile tool call).
+        /// Null if no save is pending.
+        /// </summary>
+        public string PendingSaveContent;
+
+        /// <summary>
         /// Indicates whether the API request was successful.
         /// If false, check ErrorMessage for details.
         /// </summary>

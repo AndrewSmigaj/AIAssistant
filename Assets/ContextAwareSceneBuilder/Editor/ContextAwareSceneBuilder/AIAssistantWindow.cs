@@ -65,6 +65,12 @@ namespace ContextAwareSceneBuilder.Editor
         private List<string> _allPromptPaths = new List<string>();
         private Dictionary<string, bool> _expandedFolders = new Dictionary<string, bool>();
 
+        // Example Mode state (ephemeral)
+        private string _pendingSavePath;        // Path where AI wants to save file
+        private string _pendingSaveContent;     // Content AI wants to save
+        private string _testPrompt;             // Original test prompt for rerun
+        private bool _hasTestedOnce;            // Gates rerun button
+
         // Scroll positions for UI panels
         private Vector2 _treeScrollPosition;
         private Vector2 _previewScrollPosition;
@@ -334,6 +340,32 @@ namespace ContextAwareSceneBuilder.Editor
 
             GUILayout.Space(10);
 
+            // Example Mode buttons
+            if (_isExampleMode)
+            {
+                EditorGUILayout.BeginHorizontal();
+
+                // Save Example button - enabled when pending save exists
+                GUI.enabled = !string.IsNullOrEmpty(_pendingSavePath);
+                if (GUILayout.Button("Save Example", GUILayout.Height(25)))
+                {
+                    OnSaveExample();
+                }
+                GUI.enabled = true;
+
+                // Rerun Prompt button - enabled after first save
+                GUI.enabled = _hasTestedOnce;
+                if (GUILayout.Button("Rerun Prompt", GUILayout.Height(25)))
+                {
+                    OnRerunPrompt();
+                }
+                GUI.enabled = true;
+
+                EditorGUILayout.EndHorizontal();
+
+                GUILayout.Space(5);
+            }
+
             // Exit Example Mode button (greyed when not in example mode)
             GUI.enabled = _isExampleMode;
             if (GUILayout.Button("Exit Example Mode", GUILayout.Height(25)))
@@ -550,13 +582,33 @@ namespace ContextAwareSceneBuilder.Editor
 
         /// <summary>
         /// Displays the preview column (right 30%).
-        /// Shows selected prompt content.
+        /// Priority: pending save content (Example Mode) > selected prompt content.
         /// Copied from PromptLibraryEditor.cs.
         /// </summary>
         void DisplayPreviewColumn()
         {
             EditorGUILayout.LabelField("Preview", EditorStyles.boldLabel);
 
+            // Priority 1: Show pending save content if exists (Example Mode)
+            if (!string.IsNullOrEmpty(_pendingSaveContent))
+            {
+                _previewScrollPosition = EditorGUILayout.BeginScrollView(_previewScrollPosition, GUILayout.ExpandHeight(true));
+
+                EditorGUILayout.BeginVertical(_whiteBorderedStyle);
+
+                // Show "PENDING SAVE" header with path
+                EditorGUILayout.LabelField("PENDING SAVE:", _pendingSavePath, _richTextStyle);
+                EditorGUILayout.Space();
+
+                // Show pending content
+                EditorGUILayout.TextArea(_pendingSaveContent, _previewTextStyle, GUILayout.ExpandHeight(true));
+
+                EditorGUILayout.EndVertical();
+                EditorGUILayout.EndScrollView();
+                return;
+            }
+
+            // Priority 2: Show selected prompt content
             if (string.IsNullOrEmpty(_selectedPromptPath))
             {
                 EditorGUILayout.HelpBox("Select a prompt to preview its content", MessageType.Info);
@@ -635,6 +687,12 @@ namespace ContextAwareSceneBuilder.Editor
 
             try
             {
+                // Capture test prompt for rerun (Example Mode only, first send only)
+                if (_isExampleMode && string.IsNullOrEmpty(_testPrompt))
+                {
+                    _testPrompt = CurrentPrompt;
+                }
+
                 // Step 1: Check if scene needs re-indexing
                 EditorUtility.DisplayProgressBar("AI Assistant", "Checking scene state...", 0.1f);
 
@@ -680,6 +738,15 @@ namespace ContextAwareSceneBuilder.Editor
                     else if (string.IsNullOrEmpty(plan.Message))
                     {
                         AppendLog("[AI] (No response)", LogType.Warning);
+                    }
+
+                    // Handle pending file save (Example Mode)
+                    if (!string.IsNullOrEmpty(plan.PendingSavePath))
+                    {
+                        _pendingSavePath = plan.PendingSavePath;
+                        _pendingSaveContent = plan.PendingSaveContent;
+                        AppendLog($"[System] Example ready for review in preview pane", LogType.Log);
+                        Repaint();
                     }
 
                     // Save response ID for conversation continuity
@@ -857,37 +924,228 @@ namespace ContextAwareSceneBuilder.Editor
 
         /// <summary>
         /// Handles "Create New Example" button.
-        /// STUBBED - Full implementation in Phase 3.
+        /// Enters Example Mode to create a new teaching example.
         /// </summary>
         void OnCreateNewExample()
         {
-            EditorUtility.DisplayDialog("Not Implemented",
-                "Example Mode functionality will be implemented in Phase 3.\n\n" +
-                "This will allow you to create teaching examples for the prompt library.",
-                "OK");
+            if (string.IsNullOrEmpty(_newExampleName))
+            {
+                EditorUtility.DisplayDialog("Name Required",
+                    "Please enter a name for the new example.",
+                    "OK");
+                return;
+            }
+
+            EnterExampleMode(null);
         }
 
         /// <summary>
         /// Handles "Refine Selected Example" button.
-        /// STUBBED - Full implementation in Phase 3.
+        /// Enters Example Mode to refine an existing example.
         /// </summary>
         void OnRefineSelectedExample()
         {
-            EditorUtility.DisplayDialog("Not Implemented",
-                $"Example Mode functionality will be implemented in Phase 3.\n\n" +
-                $"Selected prompt: {_selectedPromptPath}",
-                "OK");
+            if (string.IsNullOrEmpty(_selectedPromptPath))
+            {
+                EditorUtility.DisplayDialog("No Selection",
+                    "Please select a prompt from the library to refine.",
+                    "OK");
+                return;
+            }
+
+            EnterExampleMode(_selectedPromptPath);
+        }
+
+        /// <summary>
+        /// Enters Example Mode for creating or refining examples.
+        /// </summary>
+        /// <param name="existingPromptPath">Path to existing example to refine, or null to create new</param>
+        void EnterExampleMode(string existingPromptPath)
+        {
+            _isExampleMode = true;
+
+            // Switch prompts: enable example generation, disable scene builder
+            AutoEnableExampleModePrompts();
+
+            // Reset state for new Example Mode session
+            _testPrompt = null;
+            _hasTestedOnce = false;
+            _pendingSavePath = null;
+            _pendingSaveContent = null;
+
+            if (existingPromptPath != null)
+            {
+                // Refining existing example
+                AppendLog($"<color=cyan>[System] Entered Example Mode: Refining {existingPromptPath}</color>", LogType.Log);
+                AppendLog("[System] What test prompt should we use to verify this example works correctly?", LogType.Log);
+
+                // Load existing content into preview
+                string fullPath = PromptLibraryLoader.GetFullPath(existingPromptPath);
+                if (File.Exists(fullPath))
+                {
+                    _selectedPromptPath = existingPromptPath;
+                }
+            }
+            else
+            {
+                // Creating new example
+                AppendLog($"<color=cyan>[System] Entered Example Mode: Creating '{_newExampleName}'</color>", LogType.Log);
+                AppendLog("[System] What do you want this example to demonstrate?", LogType.Log);
+            }
+
+            Repaint();
         }
 
         /// <summary>
         /// Handles "Exit Example Mode" button.
-        /// STUBBED - Full implementation in Phase 3.
+        /// Returns to Scene Builder mode and restores prompts.
         /// </summary>
         void OnExitExampleMode()
         {
-            EditorUtility.DisplayDialog("Not Implemented",
-                "Example Mode functionality will be implemented in Phase 3.",
-                "OK");
+            AppendLog("<color=cyan>[System] Exiting Example Mode, returning to Scene Builder</color>", LogType.Log);
+
+            _isExampleMode = false;
+
+            // Restore Scene Builder prompts
+            AutoEnableSceneBuilderPrompts();
+
+            // Refresh prompt list in case new examples were saved
+            RefreshPromptList();
+
+            // Clear Example Mode state
+            _testPrompt = null;
+            _hasTestedOnce = false;
+            _pendingSavePath = null;
+            _pendingSaveContent = null;
+
+            Repaint();
+        }
+
+        /// <summary>
+        /// Handles "Save Example" button.
+        /// Writes pending example file to disk, enables it in settings, and prepares for testing.
+        /// </summary>
+        void OnSaveExample()
+        {
+            // Validate pending save data
+            if (string.IsNullOrEmpty(_pendingSavePath) || string.IsNullOrEmpty(_pendingSaveContent))
+            {
+                AppendLog("[Error] No pending save data", LogType.Error);
+                return;
+            }
+
+            try
+            {
+                // Get full path
+                string fullPath = PromptLibraryLoader.GetFullPath(_pendingSavePath);
+
+                // Ensure directory exists
+                string directory = Path.GetDirectoryName(fullPath);
+                if (!Directory.Exists(directory))
+                {
+                    Directory.CreateDirectory(directory);
+                    AppendLog($"[System] Created directory: {directory}", LogType.Log);
+                }
+
+                // Write file
+                File.WriteAllText(fullPath, _pendingSaveContent);
+                AppendLog($"[System] Saved example: {_pendingSavePath}", LogType.Log);
+
+                // Enable the prompt in settings
+                SetPromptAutoEnabled(_pendingSavePath, true);
+
+                // Clear pending save data
+                _pendingSavePath = null;
+                _pendingSaveContent = null;
+
+                // Mark that we've tested once (enables Rerun button)
+                _hasTestedOnce = true;
+
+                // Inject system message prompting user for feedback
+                AppendLog("[System] Example saved. Describe any issues with the result below:", LogType.Log);
+
+                Repaint();
+            }
+            catch (Exception ex)
+            {
+                AppendLog($"[Error] Failed to save example: {ex.Message}", LogType.Error);
+            }
+        }
+
+        /// <summary>
+        /// Handles "Rerun Prompt" button.
+        /// Auto-saves pending changes, switches to scene builder prompts, and reruns the test prompt.
+        /// </summary>
+        void OnRerunPrompt()
+        {
+            // Auto-save any pending content first
+            if (!string.IsNullOrEmpty(_pendingSavePath))
+            {
+                AppendLog("[System] Auto-saving pending changes before rerun...", LogType.Log);
+                OnSaveExample();
+            }
+
+            // Validate test prompt exists
+            if (string.IsNullOrEmpty(_testPrompt))
+            {
+                AppendLog("[Error] No test prompt to rerun", LogType.Error);
+                return;
+            }
+
+            // Switch to scene builder prompts to actually build the scene with the saved example
+            AutoEnableSceneBuilderPrompts();
+
+            // Resend the test prompt
+            AppendLog($"[System] Rerunning prompt with scene builder mode: {_testPrompt}", LogType.Log);
+            CurrentPrompt = _testPrompt;
+            OnSubmitPrompt();
+
+            // Inject system message prompting user for feedback
+            AppendLog("[System] After reviewing the result, describe any issues below:", LogType.Log);
+        }
+
+        /// <summary>
+        /// Sets the autoEnabled flag for a prompt in the settings.
+        /// Wrapper for PromptLibrarySettings.SetPromptAutoEnabled().
+        /// </summary>
+        /// <param name="relativePath">Relative path from PromptLibrary folder</param>
+        /// <param name="autoEnabled">Whether the prompt should be auto-enabled</param>
+        void SetPromptAutoEnabled(string relativePath, bool autoEnabled)
+        {
+            _promptSettings.SetPromptAutoEnabled(relativePath, autoEnabled);
+            AppendLog($"[System] Set autoEnabled={autoEnabled} for: {relativePath}", LogType.Log);
+        }
+
+        /// <summary>
+        /// Enables Example Mode prompts and disables Scene Builder prompts.
+        /// Called when entering Example Mode.
+        /// </summary>
+        void AutoEnableExampleModePrompts()
+        {
+            // Enable Example Mode prompts
+            _promptSettings.SetPromptEnabled("Core/sls_detailed_guide.txt", true);
+            _promptSettings.SetPromptEnabled("Core/example_generation_instructions.txt", true);
+
+            // Disable Scene Builder prompts
+            _promptSettings.SetPromptEnabled("Core/basic_instructions.txt", false);
+
+            Debug.Log("[AI Assistant] Switched to Example Mode prompts");
+        }
+
+        /// <summary>
+        /// Enables Scene Builder prompts and disables Example Mode prompts.
+        /// Called when exiting Example Mode.
+        /// </summary>
+        void AutoEnableSceneBuilderPrompts()
+        {
+            // Enable Scene Builder prompts
+            _promptSettings.SetPromptEnabled("Core/basic_instructions.txt", true);
+
+            // Disable Example Mode prompts
+            _promptSettings.SetPromptEnabled("Core/sls_detailed_guide.txt", false);
+            _promptSettings.SetPromptEnabled("Core/example_generation_instructions.txt", false);
+
+            Debug.Log("[AI Assistant] Switched to Scene Builder prompts");
         }
 
         // ============================================================================

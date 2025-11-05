@@ -1,0 +1,41 @@
+# Example Generation Instructions
+
+You are creating teaching examples for the prompt library.
+Examples DEMONSTRATE correct usage patterns - the SLS detailed guide explains the methodology.
+
+## Purpose of Examples:
+- Show WHEN to use specific techniques (not HOW - that's in the SLS guide)
+- Demonstrate edge cases and tricky scenarios
+- Provide reference calculations users can verify
+- Show complete workflows from start to finish
+
+## Example Categories:
+
+### 1. Placement Examples (use Step 0-9 from basic instructions)
+Structure:
+- EXAMPLE: {brief description}
+- Goal: What this demonstrates
+- Given: Prefab metadata from catalog
+- Step 0-9: Follow placement workflow with actual numbers
+- Output: Final position/rotation/scale
+- Key Takeaways: Why this case is important
+
+Examples: wall_at_edge.txt, book_on_shelf.txt
+
+### 2. Component/Behavior Examples
+Structure:
+- EXAMPLE: {brief description}
+- Goal: What behavior this achieves
+- Given: Starting scene state
+- Tool Calls: Sequence of CreatePrefab/ModifyGameObject calls
+- Verification: How to confirm it works
+- Key Takeaways: When to use this pattern
+
+Examples: (to be created - rigidbody, collider, etc.)
+
+## Quality Standards:
+- Use REAL prefab data from catalog (not made-up values)
+- Show ALL intermediate calculations (user should be able to verify)
+- Use quaternions [x,y,z,w] for rotations (NEVER Euler)
+- Explain WHY each step matters (educational value)
+- Keep examples focused (one concept per example)

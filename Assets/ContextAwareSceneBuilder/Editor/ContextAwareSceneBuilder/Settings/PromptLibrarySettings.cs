@@ -17,6 +17,7 @@ namespace ContextAwareSceneBuilder.Editor
         {
             public string relativePath;  // e.g., "Examples/Beds/bed_against_wall.txt"
             public bool enabled;
+            public bool autoEnabled;     // True if this prompt should auto-enable in specific modes
         }
 
         [SerializeField]
@@ -86,6 +87,42 @@ namespace ContextAwareSceneBuilder.Editor
             {
                 // Update existing entry
                 prompt.enabled = enabled;
+            }
+
+            EditorUtility.SetDirty(this);
+            AssetDatabase.SaveAssets();
+        }
+
+        /// <summary>
+        /// Sets the autoEnabled flag for a specific prompt.
+        /// Creates a new entry if the prompt doesn't exist in the list.
+        /// When autoEnabled is true, also sets enabled to true.
+        /// </summary>
+        /// <param name="relativePath">Relative path from PromptLibrary folder</param>
+        /// <param name="autoEnabled">Whether the prompt should be auto-enabled</param>
+        public void SetPromptAutoEnabled(string relativePath, bool autoEnabled)
+        {
+            PromptReference prompt = _prompts.Find(p => p.relativePath == relativePath);
+
+            if (prompt == null)
+            {
+                // Add new entry
+                prompt = new PromptReference
+                {
+                    relativePath = relativePath,
+                    enabled = autoEnabled,  // Auto-enabled prompts are also enabled
+                    autoEnabled = autoEnabled
+                };
+                _prompts.Add(prompt);
+            }
+            else
+            {
+                // Update existing entry
+                prompt.autoEnabled = autoEnabled;
+                if (autoEnabled)
+                {
+                    prompt.enabled = true;  // Auto-enabling also enables the prompt
+                }
             }
 
             EditorUtility.SetDirty(this);

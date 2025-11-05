@@ -491,6 +491,17 @@ namespace ContextAwareSceneBuilder.Editor
                         plan.Actions.Add(action);
                     }
                 }
+                else if (functionName == "savePromptFile")
+                {
+                    // Example Mode: AI wants to save/update a prompt file
+                    plan.PendingSavePath = args["relativePath"]?.Value;
+                    plan.PendingSaveContent = args["content"]?.Value;
+
+                    if (!string.IsNullOrEmpty(plan.PendingSavePath))
+                    {
+                        Debug.Log($"[AI Assistant] savePromptFile called: {plan.PendingSavePath}");
+                    }
+                }
                 else
                 {
                     Debug.LogWarning($"[AI Assistant] Unknown function: {functionName}");

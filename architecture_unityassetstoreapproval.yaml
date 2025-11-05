@@ -1,0 +1,2056 @@
+# Unity Asset Store Approval - Architecture Specification
+# Version: 1.0
+# Date: 2025-01-31
+# Purpose: Polish and features for Unity Asset Store release at $29.99
+
+project_name: "Context-Aware Scene Builder"
+asset_store_version: "1.0"
+target_unity_version: "6.2"
+price_point: "$29.99"
+
+## OVERVIEW
+#
+# This document specifies all changes needed to prepare the plugin for Unity Asset Store release.
+# Organized by priority: Critical bugs first, then core features, UI polish, and content.
+# Each item includes full implementation details for context recovery after summarization.
+
+## ═══════════════════════════════════════════════════════════════════════════════════
+## PHASE 1: CRITICAL BUGS & UI IMPROVEMENTS (blocks functionality)
+## ═══════════════════════════════════════════════════════════════════════════════════
+
+phase_1_critical_bugs:
+
+  bug_0_accept_all_button:
+    title: "Add 'Accept All' button for pending actions"
+    status: "NOT STARTED"
+    priority: "HIGH"
+
+    problem: |
+      Users must manually check every action box before executing.
+      For multiple actions, this is tedious (checking 5-10 boxes).
+      Slows down workflow significantly.
+
+    proposed_solution:
+      approach: "Add 'Accept All' button next to 'Execute Selected'"
+
+      implementation:
+        file: "Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/AIAssistantWindow.cs"
+        method: "DisplayPendingActions"
+        location: "After action checkbox list, before Execute Selected button"
+
+        current_code_pattern: |
+          // Display checkboxes for each action
+          for (int i = 0; i < _pendingActions.Count; i++) {
+              _actionCheckboxes[i] = EditorGUILayout.Toggle(_pendingActions[i].GetDescription(), _actionCheckboxes[i]);
+          }
+
+          // Execute button
+          if (GUILayout.Button("Execute Selected")) {
+              OnExecuteSelected();
+          }
+
+        proposed_code: |
+          // Display checkboxes for each action
+          for (int i = 0; i < _pendingActions.Count; i++) {
+              _actionCheckboxes[i] = EditorGUILayout.Toggle(_pendingActions[i].GetDescription(), _actionCheckboxes[i]);
+          }
+
+          // Buttons in horizontal layout
+          EditorGUILayout.BeginHorizontal();
+
+          if (GUILayout.Button("Accept All")) {
+              OnAcceptAll();
+          }
+
+          if (GUILayout.Button("Execute Selected")) {
+              OnExecuteSelected();
+          }
+
+          EditorGUILayout.EndHorizontal();
+
+        new_method: |
+          /// <summary>
+          /// Accepts all pending actions by checking all checkboxes.
+          /// </summary>
+          void OnAcceptAll() {
+              if (_pendingActions == null || _actionCheckboxes == null) {
+                  return;
+              }
+
+              for (int i = 0; i < _actionCheckboxes.Length; i++) {
+                  _actionCheckboxes[i] = true;
+              }
+
+              Repaint();
+          }
+
+      alternative_design:
+        option_1: "Accept All + Reject All buttons"
+        option_2: "Accept All, then automatically execute (skip Execute Selected click)"
+        option_3: "Dropdown with 'Accept All' / 'Reject All' / 'Invert Selection'"
+
+        recommended: "Just 'Accept All' button for simplicity. User still clicks Execute Selected for safety."
+
+    testing:
+      test_cases:
+        - "Multiple actions → click Accept All → verify all checkboxes checked"
+        - "Some checked, some unchecked → Accept All → verify all now checked"
+        - "Accept All → uncheck one → Execute Selected → verify only checked ones execute"
+        - "Accept All → Execute Selected → verify all execute"
+
+  bug_1_instanceid_tracking:
+    title: "Fix instanceID tracking for delete and modify operations"
+    status: "NOT STARTED"
+    priority: "CRITICAL"
+
+    problem: |
+      instanceID tracking fails after delete or modify operations, causing "404" errors.
+
+      Symptoms:
+      1. ALL delete operations → 404 errors when LLM tries to reference deleted objects in next turn
+      2. ALL modify operations → 404 errors when trying to modify again in next turn
+      3. LLM only proposes ONE modification at a time (not a batch), suggesting it's aware of the issue
+      4. Cannot ask LLM about the issue because conversation breaks after first delete/modify
+
+      This is not a Unity-side error - the operations succeed. The error occurs when the LLM
+      attempts to use an instanceID that is no longer valid in the scene context.
+
+    current_implementation:
+      delete_code:
+        file: "Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/DynamicPlanApplier.cs"
+        method: "ExecuteDeleteGameObject"
+        line: 550
+        code: |
+          GameObject target = EditorUtility.InstanceIDToObject(action.instanceId) as GameObject;
+          if (target == null) {
+              return new ActionResult {
+                  Action = action,
+                  Success = false,
+                  ErrorMessage = $"GameObject with instanceId {action.instanceId} not found"
+              };
+          }
+          // Delete with Undo support
+          Undo.DestroyObjectImmediate(target);
+
+      modify_code:
+        file: "Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/DynamicPlanApplier.cs"
+        method: "ExecuteModifyGameObject"
+        note: "Needs investigation - likely similar instanceID lookup pattern"
+
+      notes: |
+        - Operations succeed (deletion/modification actually happens)
+        - Scene is re-indexed after execution (AIAssistantWindow.cs line 332)
+        - Issue is likely that re-indexing creates NEW instanceIDs but LLM still has OLD instanceIDs
+        - Unity instanceIDs are session-only and can change when objects are modified/moved
+
+    root_cause_hypothesis: |
+      When scene is re-indexed after an operation:
+      1. ProjectIndexer scans the scene again
+      2. Unity instanceIDs are STABLE within a session (they don't change on modify/move)
+      3. However, the LLM's conversation memory still references OLD instanceIDs
+      4. For DELETED objects: instanceID is now invalid (object is gone)
+      5. For MODIFIED objects: instanceID SHOULD still be valid (need to verify)
+
+      Main issues:
+      - Deleted objects: LLM tries to reference deleted object's instanceID → 404 error
+      - Conversation memory: LLM doesn't know object was deleted
+      - Re-indexing timing: New scene context may not propagate to LLM correctly
+
+      For delete operations:
+      - Object is actually gone, instanceID is invalid
+      - Need to teach LLM not to reference deleted objects in conversation memory
+      - Return clear message: "Object deleted and no longer in scene"
+
+      For modify operations:
+      - instanceIDs SHOULD remain stable (Unity behavior)
+      - If 404 occurs, likely a bug in re-indexing or context propagation
+      - Need to verify: Log instanceIDs before/after modify operations
+
+    investigation_needed:
+      questions:
+        - "Unity instanceIDs are STABLE within a session (confirmed behavior)"
+        - "ProjectIndexer should preserve instanceIDs (they're read from GameObject.GetInstanceID())"
+        - "Issue is likely only with deleted objects + conversation memory"
+        - "Why does LLM only propose one modification at a time? Possibly cautious due to observed errors"
+
+      debugging_steps:
+        - "Log instanceIDs before and after scene re-indexing (verify stability)"
+        - "Test modify operation → verify instanceID unchanged after re-index"
+        - "Test delete operation → verify instanceID is gone from context"
+        - "Check conversation memory → verify LLM receives updated scene context after operations"
+        - "Verify deleted object IDs are not in updated context sent to LLM"
+
+    proposed_solution:
+      approach_1_better_messaging:
+        description: "Improve tool response messages to prevent LLM from re-using old instanceIDs"
+
+        for_delete:
+          file: "DynamicPlanApplier.cs"
+          method: "ExecuteDeleteGameObject"
+          change: |
+            Current return:
+              return new ActionResult {
+                  Action = action,
+                  Success = true
+              };
+
+            Proposed:
+              return new ActionResult {
+                  Action = action,
+                  Success = true,
+                  Message = $"Deleted '{targetName}'. This object is no longer in the scene and cannot be referenced."
+              };
+
+        for_modify:
+          file: "DynamicPlanApplier.cs"
+          method: "ExecuteModifyGameObject"
+          change: "Add similar message indicating object was modified successfully"
+
+      approach_2_system_prompt:
+        description: "Teach LLM about instanceID lifecycle"
+        changes: |
+          Add to system prompt:
+          "CRITICAL - instanceID Tracking:
+          - After deleting an object, NEVER reference its instanceID again. The object no longer exists.
+          - After modifying an object, use the NEW instanceID from the updated scene context, not the old one.
+          - Always check the current scene context for the latest instanceIDs before proposing operations.
+          - If you're unsure if an object still exists, check the scene context first."
+
+      approach_3_verify_stability:
+        description: "Verify instanceID stability (Unity behavior is they ARE stable within session)"
+        note: |
+          Unity instanceIDs are NOT transient within a session - they remain stable.
+          The issue is conversation memory, not instanceID instability.
+          instanceIDs only become invalid when:
+          - Object is destroyed
+          - Unity editor restarts (session ends)
+        verification: "Add debug logging to confirm instanceIDs don't change on modify operations"
+
+    testing:
+      test_cases:
+        delete_scenarios:
+          - "Create object → delete object → try to modify deleted object (should get clear error, not 404)"
+          - "Create object → delete object → create new object (should work, new instanceID)"
+          - "Delete multiple objects → verify none can be referenced"
+
+        modify_scenarios:
+          - "Create object → modify object → modify again (should work with correct instanceID)"
+          - "Create object → modify object → check if instanceID changed after re-index"
+          - "Modify object multiple times in sequence (should all work)"
+          - "Modify multiple objects in one batch (should all work)"
+
+        mixed_scenarios:
+          - "Create → modify → delete (full lifecycle)"
+          - "Create multiple → modify some → delete some → modify remaining"
+
+  bug_2_progress_indicator:
+    title: "Fix broken progress indicator"
+    status: "NOT STARTED"
+    priority: "HIGH"
+
+    problem: |
+      EditorUtility.DisplayProgressBar() calls no longer show progress bar.
+      Only Unity's spinning icon appears, not the progress bar with title/message/percentage.
+      This worked initially but broke at some point.
+
+    current_implementation:
+      file: "Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/AIAssistantWindow.cs"
+      method: "OnSubmitPrompt"
+      lines: "221-278"
+      code: |
+        try {
+            EditorUtility.DisplayProgressBar("AI Assistant", "Checking scene state...", 0.1f);
+            // ... work ...
+            EditorUtility.DisplayProgressBar("AI Assistant", "Building context...", 0.3f);
+            // ... work ...
+            EditorUtility.DisplayProgressBar("AI Assistant", "Calling OpenAI API...", 0.6f);
+            // ... work ...
+        }
+        finally {
+            EditorUtility.ClearProgressBar();
+        }
+
+      notes: |
+        - Code structure is correct (try-finally ensures cleanup)
+        - DisplayProgressBar calls are properly formatted
+        - Unknown why it stopped working
+
+    possible_causes:
+      - "Unity 6.2 behavior change in DisplayProgressBar API"
+      - "Asynchronous execution preventing bar from rendering"
+      - "Another plugin interfering with progress bar system"
+      - "EditorUtility.DisplayProgressBar requires main thread execution"
+
+    proposed_solution:
+      approach_1: "Use EditorGUI progress bar in window instead of modal dialog"
+
+      implementation:
+        file: "Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/AIAssistantWindow.cs"
+        add_fields: |
+          private bool _isProcessing = false;
+          private string _progressMessage = "";
+          private float _progressValue = 0f;
+
+        modify_onGUI: |
+          void OnGUI() {
+              // Disable input during processing
+              EditorGUI.BeginDisabledGroup(_isProcessing);
+
+              DisplayHeader();
+              DisplayLogArea();
+              DisplayPendingActions();
+
+              // Show progress bar at bottom if processing
+              if (_isProcessing) {
+                  Rect progressRect = new Rect(0, position.height - 20, position.width, 20);
+                  EditorGUI.ProgressBar(progressRect, _progressValue, _progressMessage);
+              }
+
+              DisplayPromptInput();
+              EditorGUI.EndDisabledGroup();
+          }
+
+        modify_onSubmitPrompt: |
+          void OnSubmitPrompt() {
+              _isProcessing = true;
+              _progressMessage = "Checking scene state...";
+              _progressValue = 0.1f;
+              Repaint();
+
+              // ... do work, update _progressMessage and _progressValue ...
+
+              _isProcessing = false;
+              Repaint();
+          }
+
+      approach_2: "Use async/await with EditorCoroutine"
+      implementation: |
+        Alternative if approach_1 doesn't work:
+        - Use Unity's EditorCoroutineUtility
+        - Yield between progress updates to allow GUI refresh
+        - May require restructuring OnSubmitPrompt as coroutine
+
+      testing:
+        steps:
+          - "Submit a prompt and verify progress bar appears"
+          - "Progress bar should show different messages at different stages"
+          - "Progress bar should disappear after completion or error"
+          - "UI should be disabled during processing"
+
+## ═══════════════════════════════════════════════════════════════════════════════════
+## PHASE 2: CORE FEATURES (needed for demo scene)
+## ═══════════════════════════════════════════════════════════════════════════════════
+
+phase_2_core_features:
+
+  feature_1_scene_context_filtering:
+    title: "Scene context filtering based on Unity selection"
+    status: "NOT STARTED"
+    priority: "HIGH"
+
+    purpose: |
+      Allow users to focus AI's attention on specific parts of the scene.
+      Reduces token usage and improves relevance for large scenes.
+      Essential for demo scene to work well (focus on one area at a time).
+
+    enhancement_recommendation: |
+      Consider adding visual feedback when filtering is active:
+      - Status text in window: "Context: 15 objects (Bedroom + children)"
+      - Helps users understand what AI can see
+      - Low priority enhancement, not required for v1.0
+
+    behavior:
+      no_selection: |
+        Scene context = root GameObjects only (not their children)
+        Current behavior, keep this as default
+
+      with_selection: |
+        Scene context = selected GameObject(s) + their children
+        This allows working within a specific area/container
+
+      example: |
+        Hierarchy:
+          - Bedroom
+            - Bed
+            - Nightstand_Left
+            - Nightstand_Right
+          - Kitchen
+            - Table
+            - Chairs
+
+        No selection → context includes [Bedroom, Kitchen]
+        Select "Bedroom" → context includes [Bedroom, Bed, Nightstand_Left, Nightstand_Right]
+
+    implementation:
+      file: "Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/ProjectIndexer.cs"
+      method: "IndexScenes"
+      line: 119
+
+      current_code: |
+        // Get root GameObjects
+        GameObject[] rootGOs = scene.GetRootGameObjects();
+        for (int i = 0; i < rootGOs.Length; i++) {
+            GameObject go = rootGOs[i];
+            // ... index this object ...
+        }
+
+      proposed_code: |
+        // Get objects to index based on selection
+        GameObject[] objectsToIndex = GetObjectsToIndex(scene);
+        for (int i = 0; i < objectsToIndex.Length; i++) {
+            GameObject go = objectsToIndex[i];
+            // ... index this object ...
+        }
+
+      new_method: |
+        /// <summary>
+        /// Gets GameObjects to index based on Unity selection.
+        /// If nothing selected: returns root GameObjects only
+        /// If something selected: returns selected GameObjects + their children
+        /// </summary>
+        private static GameObject[] GetObjectsToIndex(Scene scene) {
+            GameObject[] selection = Selection.gameObjects;
+
+            // Filter selection to only objects in this scene
+            List<GameObject> selectedInScene = new List<GameObject>();
+            foreach (GameObject go in selection) {
+                if (go.scene == scene) {
+                    selectedInScene.Add(go);
+                }
+            }
+
+            // No selection → return root objects only
+            if (selectedInScene.Count == 0) {
+                return scene.GetRootGameObjects();
+            }
+
+            // With selection → return selected + their children
+            List<GameObject> result = new List<GameObject>();
+            foreach (GameObject selected in selectedInScene) {
+                result.Add(selected);  // Include parent
+                GetAllChildren(selected.transform, result);  // Include children
+            }
+
+            return result.ToArray();
+        }
+
+        /// <summary>
+        /// Recursively gets all children of a transform
+        /// </summary>
+        private static void GetAllChildren(Transform parent, List<GameObject> list) {
+            foreach (Transform child in parent) {
+                list.Add(child.gameObject);
+                GetAllChildren(child, list);
+            }
+        }
+
+      notes: |
+        - Only filters scene objects, NOT prefab catalog
+        - Prefab catalog remains unaffected by selection
+        - Selection state checked during indexing (when user submits prompt)
+        - May need to call ProjectIndexer.IndexAll() on selection change for real-time updates
+
+    user_experience:
+      workflow: |
+        1. User selects "Bedroom" in hierarchy
+        2. User types "add a lamp on the nightstand"
+        3. AI only sees Bedroom and its contents
+        4. AI places lamp relative to nightstand (not confused by Kitchen objects)
+
+      demo_scene_usage: |
+        - Each demo area is a root GameObject container
+        - User selects demo area to work within it
+        - Signs can instruct: "Select this area before trying these prompts"
+
+    testing:
+      test_cases:
+        - "No selection → only root objects in context"
+        - "Select one object → that object + children in context"
+        - "Select multiple objects → all selected + their children in context"
+        - "Select object with no children → just that object in context"
+        - "Selection in different scene → ignored, uses roots from active scene"
+
+  feature_2_user_queries_in_chat:
+    title: "Add user queries to chat history"
+    status: "NOT STARTED"
+    priority: "MEDIUM"
+
+    problem: |
+      Chat log only shows AI responses, not user prompts.
+      Makes it hard to track conversation flow.
+      User can't see what they asked previously.
+
+    current_implementation:
+      file: "Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/AIAssistantWindow.cs"
+      current_behavior: |
+        void OnSubmitPrompt() {
+            // Validate prompt...
+
+            // Build context and call API
+            var plan = OpenAIClient.SendRequest(...);
+
+            // Log AI response
+            if (!string.IsNullOrEmpty(plan.Message)) {
+                AppendLog($"[AI] {plan.Message}", LogType.Log);
+            }
+
+            // Clear prompt
+            _userPrompt = "";
+        }
+
+      notes: |
+        - User prompt is cleared after submission
+        - Only AI responses appear in log
+        - No grep matches for "AppendLog.*userPrompt"
+
+    proposed_solution:
+      implementation: |
+        void OnSubmitPrompt() {
+            // Validate prompt...
+
+            // Log user prompt BEFORE API call
+            AppendLog($"[User] {_userPrompt}", LogType.Log);
+
+            // Build context and call API
+            var plan = OpenAIClient.SendRequest(...);
+
+            // Log AI response
+            if (!string.IsNullOrEmpty(plan.Message)) {
+                AppendLog($"[AI] {plan.Message}", LogType.Log);
+            }
+
+            // Clear prompt
+            _userPrompt = "";
+        }
+
+      formatting_options:
+        simple: "[User] prompt text"
+        with_timestamp: "[12:34:56] [User] prompt text"
+        with_separator: "═══ User ═══\nprompt text"
+
+      recommended: "Use simple format to match existing [AI] style"
+
+    additional_features:
+      - "Color-code user vs AI messages (if EditorGUI supports)"
+      - "Add copy button for individual messages (not just last AI response)"
+      - "Export conversation history to text file"
+
+    testing:
+      steps:
+        - "Submit prompt and verify it appears in log"
+        - "Verify multi-turn conversation is readable"
+        - "Check log after window close/reopen (should persist if _logEntries persists)"
+
+  feature_3_generate_script:
+    title: "generateScript tool for custom MonoBehaviour creation"
+    status: "NOT STARTED"
+    priority: "HIGH"
+
+    purpose: |
+      Enable AI to create custom C# MonoBehaviour scripts for behaviors not achievable with existing tools.
+      Demonstrates full system power: natural language → custom code → compiled behavior.
+      Essential for Interactive Cabin Demo (FPS controller, bird flight behavior).
+
+    tool_schema:
+      name: "generateScript"
+      description: "Generates and compiles a C# MonoBehaviour script, then attaches it to a GameObject"
+
+      parameters: |
+        {
+          "type": "object",
+          "properties": {
+            "scripts": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "scriptName": {
+                    "type": "string",
+                    "description": "C# class name (e.g., 'CircleFlyBehavior', 'FirstPersonController')"
+                  },
+                  "code": {
+                    "type": "string",
+                    "description": "Complete C# MonoBehaviour code with using statements"
+                  },
+                  "targetInstanceId": {
+                    "type": "integer",
+                    "description": "GameObject instanceId to attach script to after compilation"
+                  }
+                },
+                "required": ["scriptName", "code", "targetInstanceId"]
+              }
+            }
+          },
+          "required": ["scripts"]
+        }
+
+      batch_support: |
+        Like instantiateObjects, generateScript operates on an array.
+        Can generate multiple scripts in one tool call (e.g., FPS controller + bird behavior).
+
+    implementation:
+      file_new_ScriptGenerator:
+        path: "Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/ScriptGenerator.cs"
+        purpose: "Core script generation logic"
+
+        key_methods: |
+          public static ActionResult GenerateScript(string scriptName, string code, int targetInstanceId) {
+              // 1. Validate script name (alphanumeric, not existing)
+              // 2. Write code to Assets/Scripts/Generated/{scriptName}.cs
+              // 3. Register CompilationPipeline.assemblyCompilationFinished event handler
+              // 4. Call AssetDatabase.Refresh() to trigger compilation
+              // 5. Wait for compilation event or timeout (30s)
+              // 6. Check CompilerMessage[] for errors (CompilerMessageType.Error)
+              // 7. If success: Get compiled Type via assembly search, add component to target GameObject
+              // 8. Unregister event handler
+              // 9. Return ActionResult with success/error/message (include line numbers for errors)
+          }
+
+          private static void EnsureGeneratedFolderExists() {
+              // Create Assets/Scripts/Generated/ if missing
+              // Add .gitignore to exclude generated scripts from git
+          }
+
+          private static bool WaitForCompilation(float timeoutSeconds = 30f) {
+              // Use CompilationPipeline.assemblyCompilationFinished event (Unity 6 recommended)
+              // Alternative: Poll EditorApplication.isCompiling until false or timeout
+              // Register event handler before AssetDatabase.Refresh()
+              // Wait for event or timeout
+              // Check compilation messages for errors
+          }
+
+          private static Type GetCompiledType(string scriptName) {
+              // Search all assemblies for compiled type
+              // Unity scripts compile to Assembly-CSharp.dll
+              foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies()) {
+                  var type = assembly.GetType(scriptName);
+                  if (type != null) return type;
+              }
+              return null;
+          }
+
+      file_new_GenerateScriptAction:
+        path: "Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/Actions/GenerateScriptAction.cs"
+        purpose: "Action class for tool call data"
+
+        structure: |
+          public class GenerateScriptAction : IAction {
+              public string callId;
+              public string scriptName;
+              public string code;
+              public int targetInstanceId;
+
+              public string GetDescription() {
+                  return $"Generate script: {scriptName}";
+              }
+
+              public string GetCallId() => callId;
+          }
+
+      file_modify_DynamicToolGenerator:
+        path: "Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/DynamicToolGenerator.cs"
+        method: "GenerateToolsJson"
+        change: |
+          Add new tool definition:
+
+          private static JSONNode GenerateScriptTool() {
+              var tool = new JSONObject();
+              tool["type"] = "function";
+
+              var function = new JSONObject();
+              function["name"] = "generateScript";
+              function["description"] = "Generates and compiles a C# MonoBehaviour script, then attaches it to a GameObject. Use this for custom behaviors not achievable with existing components (movement patterns, interactions, custom logic).";
+
+              // ... parameter schema as above ...
+
+              tool["function"] = function;
+              return tool;
+          }
+
+          // In GenerateToolsJson(), append to tools array:
+          tools.Add(GenerateScriptTool());
+
+      file_modify_OpenAIClient:
+        path: "Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/OpenAIClient.cs"
+        method: "ParseFunctionCallItem"
+        change: |
+          Add case for generateScript:
+
+          case "generateScript":
+              var scriptsNode = args["scripts"];
+              if (scriptsNode != null && scriptsNode.IsArray) {
+                  foreach (JSONNode scriptNode in scriptsNode.AsArray) {
+                      var action = new GenerateScriptAction {
+                          callId = callId,
+                          scriptName = scriptNode["scriptName"].Value,
+                          code = scriptNode["code"].Value,
+                          targetInstanceId = scriptNode["targetInstanceId"].AsInt
+                      };
+                      actions.Add(action);
+                  }
+              }
+              break;
+
+      file_modify_DynamicPlanApplier:
+        path: "Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/DynamicPlanApplier.cs"
+        method: "ApplyPlan"
+        change: |
+          Add case in action type switch:
+
+          else if (action is GenerateScriptAction genScriptAction) {
+              var result = ScriptGenerator.GenerateScript(
+                  genScriptAction.scriptName,
+                  genScriptAction.code,
+                  genScriptAction.targetInstanceId
+              );
+              results.Add(result);
+          }
+
+    folder_structure:
+      assets_scripts_generated:
+        path: "Assets/Scripts/Generated/"
+        purpose: "Output directory for AI-generated scripts"
+        notes: |
+          - Created automatically if missing
+          - Add to .gitignore (generated scripts shouldn't be committed)
+          - Scripts persist across Unity sessions
+          - User can modify scripts manually (will be overwritten if AI regenerates same name)
+
+      gitignore_addition: |
+        Add to .gitignore:
+        Assets/Scripts/Generated/
+        Assets/Scripts/Generated.meta
+
+    error_handling:
+      compilation_failure:
+        trigger: "Generated code has syntax error"
+        behavior: |
+          - ScriptGenerator detects compilation error from Unity console
+          - Parse error message for line numbers and description
+          - Return ActionResult with Success=false, ErrorMessage="Compilation failed: {details}"
+          - AI receives error in tool result, can retry with corrected code
+
+      type_not_found:
+        trigger: "Script compiled but assembly search returns null"
+        behavior: |
+          - ScriptGenerator logs warning
+          - Return error: "Script compiled but type not found in any assembly"
+          - Check namespace (script may be in namespace, need fully qualified name)
+          - Rare edge case (usually means script wasn't actually compiled or has namespace)
+
+      target_not_found:
+        trigger: "targetInstanceId doesn't exist in scene"
+        behavior: |
+          - Script is still generated and compiled
+          - Return error: "Script created but target GameObject not found (instanceId: {id})"
+          - Script exists in project, user can attach manually
+
+      name_collision:
+        trigger: "Script with same name already exists"
+        behavior: |
+          - Option 1: Overwrite existing script (simple, but loses manual edits)
+          - Option 2: Append timestamp to scriptName (e.g., "CircleFlyBehavior_20250131_143022")
+          - Recommended: Option 2 for safety
+
+    system_prompt_additions:
+      tool_documentation: |
+        TOOL: generateScript
+
+        Purpose: Create custom C# MonoBehaviour scripts for game behaviors.
+
+        When to use:
+        - User requests behavior not achievable with existing components
+        - Natural language like "make it fly in circles", "first person controller", "follow the player"
+        - Custom movement patterns, interactions, or game logic
+
+        How it works:
+        1. You provide scriptName, complete C# code, and targetInstanceId
+        2. System writes code to file and triggers Unity compilation
+        3. After compilation, script is attached to target GameObject
+        4. If compilation fails, you receive error and can retry with corrections
+
+        Best practices:
+        - Use descriptive class names (CircleFlyBehavior, FirstPersonController, not Script1)
+        - Include all necessary using statements (UnityEngine, System, etc.)
+        - Use [SerializeField] for adjustable parameters
+        - Follow Unity conventions (Update vs FixedUpdate, etc.)
+        - Add comments for clarity
+
+        Common patterns:
+        - Movement: Use CharacterController, Rigidbody, or Transform manipulation
+        - Rotation: Transform.Rotate(), Quaternion.Lerp()
+        - Following: Vector3.MoveTowards(), Vector3.Lerp()
+        - Input: Input.GetKey(), Input.GetAxis() (or new Input System)
+        - Circular motion: Mathf.Sin/Cos for orbit calculations
+
+    testing:
+      test_cases:
+        simple_behavior:
+          prompt: "Make this object spin slowly"
+          expected: |
+            - AI generates RotateBehavior.cs with Transform.Rotate() in Update()
+            - Script compiles successfully
+            - Component attached to target GameObject
+            - In play mode: object rotates continuously
+
+        complex_behavior:
+          prompt: "Make a bird that flies in circles above the campfire"
+          expected: |
+            - AI generates CircleFlyBehavior.cs with Sin/Cos orbit logic
+            - Script includes [SerializeField] for radius and speed
+            - Script compiles and attaches successfully
+            - In play mode: bird flies in smooth circles
+
+        fps_controller:
+          prompt: "Let me walk around in first person"
+          expected: |
+            - AI generates FirstPersonController.cs with WASD + mouse look
+            - Uses CharacterController for movement
+            - Handles camera rotation correctly
+            - Script compiles and attaches to player capsule
+            - In play mode: WASD moves, mouse looks
+
+        compilation_error:
+          scenario: "AI generates code with syntax error (e.g., missing semicolon)"
+          expected: |
+            - Compilation fails
+            - Error message returned to AI with line number
+            - AI retries with corrected code
+            - Second attempt compiles successfully
+
+        batch_generation:
+          prompt: "Create a player controller and make the bird fly in circles"
+          expected: |
+            - AI generates 2 scripts in one generateScript call
+            - Both scripts compile successfully
+            - Both components attached to respective GameObjects
+
+## ═══════════════════════════════════════════════════════════════════════════════════
+## PHASE 3: UI POLISH (improves user experience)
+## ═══════════════════════════════════════════════════════════════════════════════════
+
+phase_3_ui_polish:
+
+  polish_1_help_section:
+    title: "Inline help section in Scene Builder window"
+    status: "NOT STARTED"
+    priority: "MEDIUM"
+
+    purpose: |
+      Provide in-editor setup guidance without external documentation.
+      Users can reference setup steps without leaving Unity.
+      Reduces support burden.
+
+    design:
+      type: "Inline expandable foldout"
+      location: "Scene Builder window, below header, above log area"
+      default_state: "Collapsed (user expands when needed)"
+
+    implementation:
+      file: "Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/AIAssistantWindow.cs"
+
+      add_fields: |
+        private bool _showHelp = false;  // Foldout state
+
+      modify_onGUI: |
+        void OnGUI() {
+            DisplayHeader();
+            DisplayHelp();  // NEW
+            DisplayLogArea();
+            DisplayPendingActions();
+            DisplayPromptInput();
+        }
+
+      new_method: |
+        void DisplayHelp() {
+            _showHelp = EditorGUILayout.Foldout(_showHelp, "Help & Setup Guide", true);
+
+            if (_showHelp) {
+                EditorGUILayout.BeginVertical(EditorStyles.helpBox);
+
+                EditorGUILayout.LabelField("Setup Steps:", EditorStyles.boldLabel);
+                EditorGUILayout.LabelField("1. Configure OpenAI API Key", EditorStyles.label);
+                EditorGUILayout.LabelField("   • Open Edit > Project Settings > AI Assistant", EditorStyles.label);
+                EditorGUILayout.LabelField("   • Enter your OpenAI API key", EditorStyles.label);
+                EditorGUILayout.LabelField("");
+
+                EditorGUILayout.LabelField("2. Scan Prefabs", EditorStyles.boldLabel);
+                EditorGUILayout.LabelField("   • Open Window > Context-Aware Scene Builder > Prefab Categories", EditorStyles.label);
+                EditorGUILayout.LabelField("   • Set scan folder path", EditorStyles.label);
+                EditorGUILayout.LabelField("   • Click 'Scan All Prefabs'", EditorStyles.label);
+                EditorGUILayout.LabelField("");
+
+                EditorGUILayout.LabelField("3. Annotate Prefabs with Semantic Points", EditorStyles.boldLabel);
+                EditorGUILayout.LabelField("   • Open Window > Context-Aware Scene Builder > Semantic Annotator", EditorStyles.label);
+                EditorGUILayout.LabelField("   • Click 'Initialize Semantic Points for All'", EditorStyles.label);
+                EditorGUILayout.LabelField("   • For each prefab, click 'Open in Prefab Mode'", EditorStyles.label);
+                EditorGUILayout.LabelField("   • Add directional points (front, back, top, bottom)", EditorStyles.label);
+                EditorGUILayout.LabelField("   • Set normals for each point", EditorStyles.label);
+                EditorGUILayout.LabelField("");
+
+                EditorGUILayout.LabelField("4. Start Building Scenes", EditorStyles.boldLabel);
+                EditorGUILayout.LabelField("   • Type commands like 'Create a 4x4 floor'", EditorStyles.label);
+                EditorGUILayout.LabelField("   • Review proposed actions", EditorStyles.label);
+                EditorGUILayout.LabelField("   • Check boxes to approve, click 'Execute Selected'", EditorStyles.label);
+                EditorGUILayout.LabelField("");
+
+                EditorGUILayout.LabelField("Tips:", EditorStyles.boldLabel);
+                EditorGUILayout.LabelField("   • Select objects in hierarchy to focus AI on that area", EditorStyles.label);
+                EditorGUILayout.LabelField("   • Use Ctrl+Enter to submit prompts", EditorStyles.label);
+                EditorGUILayout.LabelField("   • Enable diagnostic prompts in Prompt Library for debugging", EditorStyles.label);
+
+                EditorGUILayout.EndVertical();
+            }
+        }
+
+      styling_notes: |
+        - Use EditorStyles.helpBox for background
+        - Use EditorStyles.boldLabel for section headers
+        - Use EditorStyles.label for content
+        - Indent sub-items with "   •" prefix
+        - Empty lines between sections for readability
+
+    alternative_design: |
+      If foldout takes too much space, could use a "?" button that opens EditorUtility.DisplayDialog
+      with help text. Less elegant but more compact.
+
+    testing:
+      - "Verify foldout expands/collapses properly"
+      - "Check text is readable and properly formatted"
+      - "Ensure it doesn't interfere with other UI elements"
+
+  polish_2_token_cost_display:
+    title: "Max token cost display based on reasoning effort"
+    status: "NOT STARTED"
+    priority: "MEDIUM"
+
+    purpose: |
+      Show users the maximum token cost BEFORE submitting prompt.
+      Lets users understand worst-case API cost based on ReasoningEffort setting.
+      Helps users manage API budget.
+
+    calculation:
+      formula: "max_tokens = context_tokens + max_reasoning_tokens_for_effort"
+
+      reasoning_token_maximums:
+        minimal: "~100 tokens"
+        medium: "~500 tokens"
+        high: "~2000 tokens"
+
+      notes: |
+        These are estimates. Actual reasoning tokens vary per request.
+        User sets ReasoningEffort in AIAssistantSettings.
+        Context tokens can be calculated from ContextBuilder output.
+
+    implementation:
+      file: "Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/AIAssistantWindow.cs"
+      location: "Bottom of window, below prompt input area"
+
+      add_fields: |
+        private int _estimatedMaxTokens = 0;
+
+      modify_onSubmitPrompt: |
+        void OnSubmitPrompt() {
+            // ... existing validation ...
+
+            // Build context
+            string systemMessage, toolsJson;
+            string userMessage = ContextBuilder.BuildContextPack(_userPrompt, _settings.TokenBudget,
+                                                                  out systemMessage, out toolsJson);
+
+            // Estimate token count (rough: ~4 chars per token)
+            int contextTokens = (systemMessage.Length + userMessage.Length + toolsJson.Length) / 4;
+            int reasoningTokens = GetMaxReasoningTokens(_settings.ReasoningEffort);
+            _estimatedMaxTokens = contextTokens + reasoningTokens;
+
+            Repaint();  // Update display
+
+            // ... continue with API call ...
+        }
+
+      new_method: |
+        /// <summary>
+        /// Gets maximum reasoning tokens for a given effort level.
+        /// These are estimates based on observed o4-mini behavior.
+        /// </summary>
+        int GetMaxReasoningTokens(ReasoningEffort effort) {
+            switch (effort) {
+                case ReasoningEffort.Minimal: return 100;
+                case ReasoningEffort.Medium: return 500;
+                case ReasoningEffort.High: return 2000;
+                default: return 500;
+            }
+        }
+
+      display_method: |
+        void DisplayTokenEstimate() {
+            if (_estimatedMaxTokens > 0) {
+                EditorGUILayout.BeginHorizontal();
+                GUILayout.FlexibleSpace();
+                EditorGUILayout.LabelField(
+                    $"Estimated max tokens: {_estimatedMaxTokens:N0} (Reasoning: {_settings.ReasoningEffort})",
+                    EditorStyles.miniLabel,
+                    GUILayout.Width(300)
+                );
+                EditorGUILayout.EndHorizontal();
+            }
+        }
+
+      modify_onGUI: |
+        void OnGUI() {
+            DisplayHeader();
+            DisplayHelp();
+            DisplayLogArea();
+            DisplayPendingActions();
+            DisplayPromptInput();
+            DisplayTokenEstimate();  // NEW - at bottom
+        }
+
+      styling:
+        font: "EditorStyles.miniLabel (small, unobtrusive)"
+        alignment: "Right-aligned at bottom"
+        format: "'Estimated max tokens: 1,234 (Reasoning: Medium)'"
+
+    enhancements:
+      - "Add actual token count after API response (from usage field)"
+      - "Show comparison: 'Estimated: 1,234 | Actual: 987'"
+      - "Track session total tokens"
+      - "Warning if estimate exceeds user-defined budget"
+
+    testing:
+      - "Verify estimate appears after building context"
+      - "Change ReasoningEffort setting and verify max changes"
+      - "Submit large prompt and verify estimate is reasonable"
+
+  polish_3_semantic_point_visualization_toggle:
+    title: "Toggle semantic point visualization in editor"
+    status: "NOT STARTED"
+    priority: "MEDIUM"
+
+    problem: |
+      Semantic point markers (yellow spheres, labels, normal arrows) are always visible in Scene view.
+      With complicated object arrangements or dense prefabs, these markers can obscure the actual scene.
+      Users cannot see what they're working on because gizmos cover everything.
+      No way to temporarily hide markers to see the scene clearly.
+
+    user_need: |
+      Quick toggle to hide/show all semantic point visualizations when working with:
+      - Dense furniture arrangements (bedroom with many annotated prefabs)
+      - Complex object hierarchies with overlapping semantic points
+      - Fine positioning work where gizmos are distracting
+      - Screenshot/presentation preparation (want clean view)
+
+    current_implementation:
+      file: "Assets/ContextAwareSceneBuilder/Components/SemanticPointMarker.cs"
+      method: "OnDrawGizmos"
+      lines: "28-43"
+      behavior: |
+        - Always draws yellow spheres at semantic point positions
+        - Always draws labels with point names
+        - Always draws cyan normal arrows (if normal != zero)
+        - No conditional logic based on settings
+        - Wrapped in #if UNITY_EDITOR (only shows in editor)
+
+    proposed_solution:
+      approach: "Settings-based toggle system with menu shortcuts"
+
+      components:
+        settings_scriptableobject:
+          file: "Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/Settings/SemanticPointSettings.cs"
+          purpose: "Store visualization preferences persistently"
+
+          fields: |
+            [SerializeField] private bool _showSemanticPoints = true;      // Master toggle
+            [SerializeField] private bool _showNormals = true;              // Show normal arrows
+            [SerializeField] private bool _showLabels = true;               // Show point names
+            [SerializeField] private float _sphereSize = 0.05f;             // Gizmo size
+            [SerializeField] private float _normalLength = 0.2f;            // Arrow length
+            [SerializeField] private Color _sphereColor = yellow;           // Sphere color
+            [SerializeField] private Color _normalColor = cyan;             // Arrow color
+
+          singleton_pattern: |
+            private static SemanticPointSettings _instance;
+            public static SemanticPointSettings GetOrCreateSettings() {
+                if (_instance != null) return _instance;
+                _instance = AssetDatabase.LoadAssetAtPath<SemanticPointSettings>(SETTINGS_PATH);
+                if (_instance == null) {
+                    // Create new settings asset
+                }
+                return _instance;
+            }
+
+          helper_methods: |
+            public void ToggleSemanticPointVisuals() {
+                _showSemanticPoints = !_showSemanticPoints;
+                EditorUtility.SetDirty(this);
+                AssetDatabase.SaveAssets();
+                SceneView.RepaintAll();  // Force refresh
+            }
+
+        marker_component_update:
+          file: "Assets/ContextAwareSceneBuilder/Components/SemanticPointMarker.cs"
+          method: "OnDrawGizmos"
+
+          current_code: |
+            void OnDrawGizmos() {
+                // Semi-transparent yellow sphere
+                Gizmos.color = new Color(1f, 1f, 0f, 0.5f);
+                Gizmos.DrawSphere(transform.position, 0.05f);
+
+                // Label with point name
+                Handles.Label(transform.position, gameObject.name);
+
+                // Draw normal direction if non-zero
+                if (normal != Vector3.zero) {
+                    Gizmos.color = Color.cyan;
+                    Gizmos.DrawRay(transform.position, normal.normalized * 0.2f);
+                }
+            }
+
+          proposed_code: |
+            void OnDrawGizmos() {
+                #if UNITY_EDITOR
+                var settings = SemanticPointSettings.GetOrCreateSettings();
+
+                // Check master toggle
+                if (!settings.ShowSemanticPoints) return;
+
+                // Draw sphere
+                Gizmos.color = settings.SphereColor;
+                Gizmos.DrawSphere(transform.position, settings.SphereSize);
+
+                // Draw label if enabled
+                if (settings.ShowLabels) {
+                    Handles.Label(transform.position, gameObject.name);
+                }
+
+                // Draw normal if non-zero and enabled
+                if (settings.ShowNormals && normal != Vector3.zero) {
+                    Gizmos.color = settings.NormalColor;
+                    Gizmos.DrawRay(transform.position, normal.normalized * settings.NormalLength);
+                }
+                #endif
+            }
+
+        menu_shortcut:
+          file: "Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/EditorMenuItems.cs"
+          purpose: "Quick access menu item for toggling visualization"
+
+          implementation: |
+            [MenuItem("Window/Context-Aware Scene Builder/Toggle Semantic Points %#S")]  // Ctrl+Shift+S
+            static void ToggleSemanticPointVisualization() {
+                var settings = SemanticPointSettings.GetOrCreateSettings();
+                settings.ToggleSemanticPointVisuals();
+
+                string state = settings.ShowSemanticPoints ? "visible" : "hidden";
+                Debug.Log($"[Semantic Points] Markers are now {state}");
+            }
+
+            // Checkmark in menu when visible
+            [MenuItem("Window/Context-Aware Scene Builder/Toggle Semantic Points %#S", true)]
+            static bool ToggleSemanticPointVisualizationValidate() {
+                var settings = SemanticPointSettings.GetOrCreateSettings();
+                Menu.SetChecked("Window/Context-Aware Scene Builder/Toggle Semantic Points %#S",
+                                settings.ShowSemanticPoints);
+                return true;
+            }
+
+        settings_inspector:
+          file: "Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/Settings/SemanticPointSettingsInspector.cs"
+          purpose: "Custom inspector for visual settings editing"
+
+          implementation: |
+            [CustomEditor(typeof(SemanticPointSettings))]
+            public class SemanticPointSettingsInspector : Editor {
+                public override void OnInspectorGUI() {
+                    SemanticPointSettings settings = (SemanticPointSettings)target;
+
+                    EditorGUILayout.LabelField("Semantic Point Visualization", EditorStyles.boldLabel);
+                    EditorGUILayout.Space();
+
+                    // Master toggle with prominent button
+                    if (GUILayout.Button(settings.ShowSemanticPoints ? "Hide All" : "Show All",
+                                         GUILayout.Height(30))) {
+                        settings.ToggleSemanticPointVisuals();
+                    }
+
+                    EditorGUILayout.Space();
+
+                    // Individual toggles (grayed out if master toggle is off)
+                    EditorGUI.BeginDisabledGroup(!settings.ShowSemanticPoints);
+                    DrawDefaultInspector();  // Show all fields
+                    EditorGUI.EndDisabledGroup();
+                }
+            }
+
+    user_experience:
+      workflow_1_quick_toggle:
+        scenario: "User arranging dense bedroom scene with many furniture pieces"
+        steps:
+          - "Yellow markers everywhere, can't see bed placement clearly"
+          - "Press Ctrl+Shift+S (keyboard shortcut)"
+          - "Markers disappear instantly, clean view of scene"
+          - "Position bed accurately"
+          - "Press Ctrl+Shift+S again to restore markers"
+          - "Continue working with markers visible for semantic context"
+
+      workflow_2_menu_access:
+        scenario: "User forgot keyboard shortcut"
+        steps:
+          - "Open Window > Context-Aware Scene Builder menu"
+          - "Click 'Toggle Semantic Points' (shows checkmark when visible)"
+          - "Markers hide/show based on current state"
+
+      workflow_3_granular_control:
+        scenario: "User wants spheres visible but labels hidden (less clutter)"
+        steps:
+          - "Open Project Settings or locate SemanticPointSettings asset"
+          - "Uncheck 'Show Labels' but keep 'Show Semantic Points' checked"
+          - "Keep 'Show Normals' checked for alignment work"
+          - "Scene shows spheres + arrows, no text labels"
+
+      workflow_4_presentation:
+        scenario: "Recording tutorial video, want clean scene view"
+        steps:
+          - "Press Ctrl+Shift+S to hide all markers before recording"
+          - "Record scene building demonstration"
+          - "Press Ctrl+Shift+S to restore markers after recording"
+
+    implementation_notes:
+      persistence: |
+        - Settings stored in ScriptableObject asset (survives Unity restarts)
+        - Asset location: Assets/ContextAwareSceneBuilder/Settings/SemanticPointSettings.asset
+        - Gets created automatically on first access (singleton pattern)
+
+      performance: |
+        - Settings check happens every gizmo draw (many times per frame)
+        - GetOrCreateSettings() cached in static field (fast lookup)
+        - No performance impact when markers hidden (early return)
+
+      scene_view_repaint: |
+        - SceneView.RepaintAll() called when toggling
+        - Forces immediate visual update (no need to move camera)
+        - Essential for responsive toggle feel
+
+      default_state: |
+        - Markers visible by default (existing behavior preserved)
+        - New users see markers immediately (discoverability)
+        - Power users can hide when needed
+
+    alternative_designs:
+      option_1_unity_gizmos_menu:
+        description: "Use Unity's built-in Gizmos menu (top-right of Scene view)"
+        pros: "Familiar location, no custom UI needed"
+        cons: "Buried in dropdown, hard to find, no keyboard shortcut"
+        verdict: "Not recommended - too hidden for common operation"
+
+      option_2_scene_view_overlay:
+        description: "Add button overlay in Scene view (Unity 2021+)"
+        pros: "Always visible, one-click toggle"
+        cons: "Takes screen space, only works in Scene view"
+        verdict: "Could be addition to menu item, not replacement"
+
+      option_3_toolbar_button:
+        description: "Add button to Scene Builder window toolbar"
+        pros: "Visible when window open"
+        cons: "Window might not be open during scene work"
+        verdict: "Could be addition, not primary access method"
+
+      recommended: |
+        Menu item with keyboard shortcut (Ctrl+Shift+S)
+        + Settings asset for granular control
+        + Optional: Scene view overlay button as enhancement
+
+    testing:
+      test_cases:
+        basic_toggle:
+          - "Scene with multiple annotated prefabs"
+          - "Press Ctrl+Shift+S → all markers disappear"
+          - "Press Ctrl+Shift+S again → all markers reappear"
+          - "Verify immediate update (no lag)"
+
+        granular_control:
+          - "Disable labels only → spheres + arrows visible, no text"
+          - "Disable normals only → spheres + labels visible, no arrows"
+          - "Adjust sphere size → verify size changes in Scene view"
+          - "Adjust normal length → verify arrow length changes"
+
+        persistence:
+          - "Toggle markers off"
+          - "Close Unity"
+          - "Reopen project"
+          - "Verify markers still hidden (setting persisted)"
+
+        menu_state:
+          - "Open menu → verify checkmark appears when markers visible"
+          - "Toggle via menu → checkmark updates correctly"
+
+        multiple_scenes:
+          - "Multiple scenes open with semantic points"
+          - "Toggle markers off → all scenes update"
+          - "Toggle markers on → all scenes show markers"
+
+        performance:
+          - "Scene with 100+ semantic points"
+          - "Toggle markers off → verify no performance drop"
+          - "Toggle markers on → verify smooth rendering"
+
+    documentation_additions:
+      user_guide_section: |
+        Add to Section 4 (Workflows):
+        "Hiding Semantic Point Markers:
+        When working with dense object arrangements, semantic point markers can obscure
+        your view. Press Ctrl+Shift+S or use Window > Context-Aware Scene Builder >
+        Toggle Semantic Points to hide/show all markers. For granular control, open
+        Project Settings and locate SemanticPointSettings to customize visibility."
+
+      in_editor_help: |
+        Add to help foldout (polish_1_help_section):
+        "Keyboard Shortcuts:
+        • Ctrl+Enter: Submit prompt
+        • Ctrl+Shift+S: Toggle semantic point markers"
+
+  polish_4_error_handling:
+    title: "Improved error handling for production"
+    status: "NOT STARTED"
+    priority: "MEDIUM"
+
+    error_types:
+
+      network_errors:
+        description: "Timeout, connection failed, DNS errors"
+        current_handling: "Generic exception catch"
+        proposed_handling: |
+          Detect network exceptions specifically:
+          - HttpRequestException
+          - WebException
+          - TaskCanceledException (timeout)
+
+          Show user-friendly message:
+          "[Error] Network error. Check internet connection and try again."
+
+        file: "Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/OpenAIClient.cs"
+        method: "SendRequest"
+
+        implementation: |
+          try {
+              // ... API call ...
+          }
+          catch (HttpRequestException ex) {
+              return new AIResponse {
+                  Success = false,
+                  ErrorMessage = "Network error. Check your internet connection."
+              };
+          }
+          catch (TaskCanceledException ex) {
+              return new AIResponse {
+                  Success = false,
+                  ErrorMessage = "Request timed out. Try again or check network."
+              };
+          }
+
+      invalid_api_key:
+        description: "API key missing, invalid, or expired"
+        current_handling: "ValidateAPIKey() checks if empty"
+        proposed_handling: |
+          Detect 401 Unauthorized responses from OpenAI.
+          Show clear message with link to settings.
+
+        file: "Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/OpenAIClient.cs"
+        implementation: |
+          if (response.StatusCode == 401) {
+              return new AIResponse {
+                  Success = false,
+                  ErrorMessage = "Invalid API key. Check Edit > Project Settings > AI Assistant."
+              };
+          }
+
+      rate_limits:
+        description: "429 Too Many Requests (hit rate limit)"
+        current_handling: "Not handled specifically"
+        proposed_handling: |
+          Detect 429 responses.
+          Parse Retry-After header if present.
+          Show message with wait time.
+
+        file: "Assets/ContextAwareSceneBuilder/Editor/ContextAwareSceneBuilder/OpenAIClient.cs"
+        implementation: |
+          if (response.StatusCode == 429) {
+              string retryAfter = response.Headers.Contains("Retry-After")
+                  ? response.Headers.GetValues("Retry-After").First()
+                  : "60";
+
+              return new AIResponse {
+                  Success = false,
+                  ErrorMessage = $"Rate limit exceeded. Wait {retryAfter} seconds and try again."
+              };
+          }
+
+      json_parse_errors:
+        description: "Malformed API response"
+        current_handling: "Exception catch"
+        proposed_handling: |
+          Catch JSON parse exceptions.
+          Log raw response for debugging.
+          Show user-friendly message.
+
+        implementation: |
+          try {
+              var response = JSON.Parse(responseBody);
+          }
+          catch (Exception ex) {
+              Debug.LogError($"[OpenAI] Malformed response: {responseBody}");
+              return new AIResponse {
+                  Success = false,
+                  ErrorMessage = "Received invalid response from OpenAI API."
+              };
+          }
+
+    testing:
+      test_scenarios:
+        - "Disconnect internet, submit prompt → should show network error"
+        - "Use invalid API key → should show clear API key error"
+        - "Submit many rapid requests → should handle rate limit gracefully"
+        - "Mock malformed JSON response → should not crash, show error"
+
+## ═══════════════════════════════════════════════════════════════════════════════════
+## PHASE 4: CONTENT (Asset Store submission requirements)
+## ═══════════════════════════════════════════════════════════════════════════════════
+
+phase_4_content:
+
+  content_1_interactive_cabin_demo:
+    title: "Interactive cabin demo scene with behavior generation"
+    status: "NOT STARTED"
+    priority: "HIGH"
+
+    purpose: |
+      Demonstrate natural language scene building with physics, custom behaviors, and player interaction.
+      Shows full system capabilities: object placement, component management, script generation, and walkable environment.
+      Users build entire scene from scratch using conversational prompts (not developer-speak).
+
+    scene_structure:
+      file_location: "Assets/ContextAwareSceneBuilder/Examples/CabinInteractiveDemo.unity"
+
+      starting_state:
+        contents:
+          - "Empty scene (no pre-built objects)"
+          - "Single instruction sign with 4 prompts"
+          - "Default lighting and camera setup"
+
+        philosophy: |
+          Scene is built entirely through AI prompts, demonstrating the system's ability to understand
+          natural language intent rather than requiring technical commands.
+
+      instruction_sign:
+        type: "TextMeshPro 3D text"
+        position: "[0, 0, 5] (visible from scene view start position)"
+
+        content: |
+          INTERACTIVE CABIN DEMO - Conversational Scene Building
+
+          Try these prompts to build an explorable scene:
+
+          1. "Build me a small log cabin with a bed and table inside"
+
+          2. "Add a campfire and some trees outside the cabin"
+
+          3. "Let me walk around in first person"
+
+          4. "Make a bird that flies in circles above the campfire"
+
+          Use WASD to move, mouse to look around!
+          Try adding your own ideas after completing these prompts.
+
+      expected_ai_behavior:
+        prompt_1_cabin:
+          user_says: "Build me a small log cabin with a bed and table inside"
+          ai_understands:
+            - "Create 6x6m floor grid using Floor2m prefabs"
+            - "Build 4 walls (6m long, 3m tall) in square with door opening on front"
+            - "Add simple roof using angled floor prefabs"
+            - "Place bed against back wall (using 'back' and 'front' semantic points)"
+            - "Place table in center of cabin"
+            - "Place chair near table"
+
+          tools_used:
+            - "instantiateObjects (batch create floor, walls, roof, furniture)"
+            - "Uses semantic points for proper alignment"
+
+        prompt_2_outdoor:
+          user_says: "Add a campfire and some trees outside the cabin"
+          ai_understands:
+            - "Place campfire 8-10m in front of cabin door"
+            - "Arrange 5-7 trees in natural circle around cabin (12-15m radius)"
+            - "Scatter 3-5 rocks between trees"
+            - "Optional: Add grass patches for visual interest"
+
+          tools_used:
+            - "instantiateObjects (batch create campfire, trees, rocks)"
+            - "Uses spatial reasoning for natural arrangement"
+
+        prompt_3_player:
+          user_says: "Let me walk around in first person"
+          ai_understands:
+            - "Create player capsule (2m height, 0.5m radius)"
+            - "Position camera at eye level (1.6m) as child of capsule"
+            - "Generate FirstPersonController.cs script with:"
+            - "  - WASD movement using CharacterController"
+            - "  - Mouse look (horizontal = player rotation, vertical = camera rotation)"
+            - "  - Ground checking and gravity"
+            - "Add CharacterController component"
+            - "Spawn player near cabin door (3-4m away, facing cabin)"
+
+          tools_used:
+            - "instantiateObjects (create player capsule with camera child)"
+            - "addComponent (add CharacterController)"
+            - "generateScript (create FirstPersonController.cs)"
+            - "modifyGameObject (position player at spawn location)"
+
+        prompt_4_bird:
+          user_says: "Make a bird that flies in circles above the campfire"
+          ai_understands:
+            - "Create bird prefab (or simple bird from primitives)"
+            - "Position above campfire at y=5m"
+            - "Generate CircleFlyBehavior.cs script with:"
+            - "  - Store center point (campfire position)"
+            - "  - Rotate around center using Mathf.Sin/Cos"
+            - "  - Adjustable radius (3-5m) and speed (30-60 deg/sec)"
+            - "  - Face movement direction"
+
+          tools_used:
+            - "instantiateObjects (create bird)"
+            - "generateScript (create CircleFlyBehavior.cs)"
+
+    prefabs_needed:
+      existing_prefabs:
+        - "Floor2m.prefab (for cabin floor)"
+        - "Wall1m.prefab, Wall4m.prefab (for cabin walls)"
+        - "WallDoorFrame2m.prefab (for cabin door)"
+        - "BedDouble.prefab (cabin furniture)"
+        - "TableSquareMedium.prefab (cabin furniture)"
+        - "ChairDinningB.prefab (cabin furniture)"
+
+      to_import_from_asset_pack:
+        source: "Unity Asset Store free pack (e.g., 'Simple Low Poly Nature Pack')"
+        license_requirement: "Verify redistribution allowed in paid Unity assets"
+        items:
+          - "Trees (pine/evergreen variants)"
+          - "Rocks (small, medium, large variants)"
+          - "Grass patches/ground textures"
+          - "Campfire prefab (or build from primitives with particle effects)"
+
+      to_create_manually:
+        PlayerCapsule_prefab:
+          file: "Assets/ContextAwareSceneBuilder/Examples/Prefabs/PlayerCapsule.prefab"
+          structure: |
+            PlayerCapsule (Capsule)
+              └─ Camera (positioned at y=1.6m local)
+          semantic_points:
+            - "spawn_point at base (y=0)"
+            - "eye_level at camera position (y=1.6m)"
+          notes: "Simple prefab, FPS controller script added by AI via generateScript"
+
+        Bird_prefab:
+          file: "Assets/ContextAwareSceneBuilder/Examples/Prefabs/Bird.prefab"
+          structure: "Simple bird shape (cubes/spheres arranged as body + wings)"
+          semantic_points:
+            - "center (body center for behavior reference)"
+          notes: "Only needed if asset pack doesn't include bird"
+
+        InstructionSign_prefab:
+          file: "Assets/ContextAwareSceneBuilder/Examples/Prefabs/InstructionSign.prefab"
+          structure: "TextMeshPro 3D text with demo prompts"
+          notes: "Pre-placed in empty scene, readable from start position"
+
+      semantic_point_updates:
+        floor_prefabs:
+          add: "spawn_point semantic point (y=0, normal [0,1,0])"
+          purpose: "AI can identify suitable player spawn locations"
+
+        wall_prefabs:
+          verify: "door_opening semantic areas properly marked"
+          purpose: "AI knows where to place door frames"
+
+    implementation_steps:
+      step_1: "Import free asset pack (trees, rocks, campfire)"
+      step_2: "Create PlayerCapsule.prefab with camera child"
+      step_3: "Create Bird.prefab (if needed)"
+      step_4: "Create InstructionSign.prefab with demo prompt text"
+      step_5: "Update floor prefabs with spawn_point semantic points"
+      step_6: "Create CabinInteractiveDemo.unity with sign only"
+      step_7: "Add default lighting and camera setup"
+      step_8: "Test 4-prompt sequence end-to-end"
+
+    testing:
+      manual_test_sequence:
+        setup: "Open CabinInteractiveDemo.unity (empty scene with sign)"
+
+        test_prompt_1:
+          prompt: "Build me a small log cabin with a bed and table inside"
+          verify:
+            - "Floor grid created (6x6m or similar)"
+            - "4 walls with door opening on front"
+            - "Roof added (angled or flat)"
+            - "Bed placed against wall"
+            - "Table and chair placed inside"
+            - "All semantic point alignments correct"
+
+        test_prompt_2:
+          prompt: "Add a campfire and some trees outside the cabin"
+          verify:
+            - "Campfire placed in front of cabin"
+            - "Trees arranged naturally around cabin"
+            - "Rocks scattered appropriately"
+            - "No overlap with cabin structure"
+
+        test_prompt_3:
+          prompt: "Let me walk around in first person"
+          verify:
+            - "Player capsule created"
+            - "Camera positioned at eye level"
+            - "FirstPersonController.cs script generated and compiled"
+            - "CharacterController component added"
+            - "Player spawned near cabin door"
+            - "WASD movement works in play mode"
+            - "Mouse look works (horizontal + vertical)"
+
+        test_prompt_4:
+          prompt: "Make a bird that flies in circles above the campfire"
+          verify:
+            - "Bird prefab placed"
+            - "CircleFlyBehavior.cs script generated and compiled"
+            - "Bird positioned above campfire"
+            - "In play mode: bird flies in smooth circles"
+
+        play_mode_test:
+          steps:
+            - "Enter play mode"
+            - "Use WASD to walk around cabin"
+            - "Use mouse to look around"
+            - "Verify bird flies in circles"
+            - "Try walking through door into cabin"
+            - "Verify no console errors"
+
+      error_cases:
+        script_compilation_fail:
+          trigger: "Generated script has syntax error"
+          expected: "Clear error message with line numbers, AI can retry"
+
+        missing_prefab:
+          trigger: "Asset pack tree not found"
+          expected: "AI uses primitives or suggests alternative"
+
+        player_stuck:
+          trigger: "Player spawns inside cabin wall"
+          expected: "AI adjusts spawn position away from obstacles"
+
+      edge_cases:
+        - "Multiple generateScript calls in one batch (bird + player controller)"
+        - "User modifies generated script manually (should preserve on re-generate)"
+        - "Script name collision (append timestamp to scriptName)"
+        - "generateScript without targetInstanceId (script created but not attached)"
+
+    readme_companion:
+      file: "Assets/ContextAwareSceneBuilder/Examples/README_CabinDemo.md"
+      content: |
+        - Overview of interactive cabin demo
+        - Step-by-step walkthrough of 4 prompts
+        - Expected results with screenshots
+        - Tips for variations:
+          - "Add a second bird"
+          - "Make the cabin bigger"
+          - "Add physics to objects (make chair pushable)"
+          - "Add more outdoor elements (logs, bushes)"
+        - Troubleshooting common issues
+        - Explanation of generateScript tool
+
+  content_2_pdf_guide:
+    title: "Comprehensive PDF user guide"
+    status: "NOT STARTED"
+    priority: "HIGH"
+
+    purpose: |
+      Provide complete reference documentation for Asset Store users.
+      Covers all features, workflows, troubleshooting, and advanced topics.
+      Required for Asset Store approval.
+
+    file_location: "Assets/ContextAwareSceneBuilder/Documentation/UserGuide.pdf"
+
+    table_of_contents:
+      section_1_introduction:
+        - "What is Context-Aware Scene Builder"
+        - "Key features"
+        - "Requirements (Unity 6.2, OpenAI API key)"
+        - "Installation"
+
+      section_2_getting_started:
+        - "Setup workflow overview"
+        - "Configuring OpenAI API key"
+        - "Understanding semantic points"
+        - "First scene build example"
+
+      section_3_windows:
+        - "Scene Builder (main interface)"
+        - "Semantic Annotator (prefab annotation)"
+        - "Prefab Categories (scanning)"
+        - "Prompt Library (customization)"
+
+      section_4_workflows:
+        - "Annotating prefabs with semantic points"
+        - "Scanning prefabs"
+        - "Building scenes conversationally"
+        - "Multi-turn conversations"
+        - "Selection-based context filtering"
+        - "Modifying existing objects"
+        - "Component management"
+
+      section_5_semantic_local_space:
+        - "What is SLS and why it matters"
+        - "How R_ls is calculated"
+        - "Understanding semantic points"
+        - "Semantic point conventions (furniture, props, architecture)"
+        - "Two-vector alignment algorithm"
+
+      section_6_troubleshooting:
+        - "Objects placed at wrong position"
+        - "Objects facing wrong direction"
+        - "Walls not symmetric (common error)"
+        - "Scale issues"
+        - "API errors"
+        - "Performance issues"
+
+      section_7_advanced_topics:
+        - "Scale handling (unscaled SLS)"
+        - "'Just created' objects (not in scene context yet)"
+        - "Quaternion rotations"
+        - "Writing custom prompt library examples"
+        - "Understanding the SLS math (reference to SLS_MATH_README.md)"
+
+      section_8_reference:
+        - "Semantic point conventions (full tables)"
+        - "Error messages and solutions"
+        - "API settings and token budgets"
+        - "Keyboard shortcuts"
+
+      section_9_example_scenes:
+        - "Interactive Cabin Demo walkthrough"
+        - "Step-by-step: Building the cabin"
+        - "Step-by-step: Adding outdoor elements"
+        - "Step-by-step: Creating the player controller"
+        - "Step-by-step: Generating bird behavior"
+        - "Understanding generateScript tool"
+        - "Tips for variations and experimentation"
+
+      appendix:
+        - "License information (MIT)"
+        - "Support and feedback"
+        - "Known limitations"
+        - "Future features"
+
+    formatting_guidelines:
+      page_size: "US Letter or A4"
+      fonts:
+        - "Headings: Sans-serif, bold"
+        - "Body: Serif, readable (11-12pt)"
+        - "Code: Monospace"
+
+      elements:
+        - "Table of contents with page numbers"
+        - "Screenshots of each window"
+        - "Diagrams for SLS concepts"
+        - "Code snippets with syntax highlighting"
+        - "Callout boxes for important notes"
+        - "Step-by-step numbered instructions"
+        - "Before/after images for examples"
+
+      branding:
+        - "Title page with plugin name and version"
+        - "Footer with page numbers"
+        - "Consistent color scheme (match Unity dark theme)"
+
+    tools_for_creation:
+      - "Markdown → PDF converter (Pandoc)"
+      - "Google Docs → Export as PDF"
+      - "LaTeX (for technical documentation)"
+      - "Adobe InDesign (professional layout)"
+
+    review_process:
+      - "Technical review (verify all procedures work)"
+      - "Copy edit (grammar, clarity)"
+      - "Screenshot review (up-to-date with current UI)"
+      - "Link validation (if any web links)"
+      - "PDF optimization (file size < 10MB for Asset Store)"
+
+## ═══════════════════════════════════════════════════════════════════════════════════
+## PHASE 5: FUTURE WORK (acknowledged but not in this release)
+## ═══════════════════════════════════════════════════════════════════════════════════
+
+phase_5_future_work:
+
+  future_1_prefab_filtering:
+    title: "Prefab filtering for context"
+    status: "FUTURE"
+    priority: "LOW"
+
+    description: |
+      Allow filtering which prefabs appear in the prefab catalog based on context.
+      For demo scene, only show relevant prefabs for each area.
+
+      Example:
+      - FurnitureDemo area → show furniture prefabs only
+      - OutdoorDemo area → show outdoor/nature prefabs only
+      - MarioDemo area → show cube prefabs only
+
+    why_not_now: |
+      - Adds complexity to prefab system
+      - Scene context filtering (Phase 2) solves most of the problem
+      - Can work around with good prefab naming and user instruction
+      - Better to ship working product than delay for this feature
+
+    potential_implementation: |
+      - Tag-based filtering (prefabs have tags, areas specify allowed tags)
+      - Folder-based filtering (scan different folders per area)
+      - Manual prefab lists per area
+
+    notes: |
+      Mentioned for completeness. User indicated this is not a main feature and
+      would require an LLM to help write the implementation. Defer to future version.
+
+## ═══════════════════════════════════════════════════════════════════════════════════
+## IMPLEMENTATION PRIORITY ORDER
+## ═══════════════════════════════════════════════════════════════════════════════════
+
+priority_order:
+  critical_first:
+    - "bug_1_delete_404 (blocks usage)"
+    - "bug_2_progress_indicator (poor UX)"
+
+  core_features_second:
+    - "feature_1_scene_context_filtering (needed for demo)"
+    - "feature_2_user_queries_in_chat (needed for usability)"
+
+  polish_third:
+    - "polish_1_help_section (nice to have)"
+    - "polish_2_token_cost_display (nice to have)"
+    - "polish_3_error_handling (production ready)"
+
+  content_last:
+    - "content_1_example_scene (Asset Store requirement)"
+    - "content_2_pdf_guide (Asset Store requirement)"
+
+## ═══════════════════════════════════════════════════════════════════════════════════
+## TESTING STRATEGY
+## ═══════════════════════════════════════════════════════════════════════════════════
+
+testing_strategy:
+
+  unit_testing:
+    scope: "Test individual components in isolation"
+    tests:
+      - "Scene context filtering logic (selection vs no selection)"
+      - "Token cost calculation accuracy"
+      - "Error detection and message generation"
+
+  integration_testing:
+    scope: "Test features working together"
+    tests:
+      - "Delete object → verify 404 doesn't happen in next turn"
+      - "Select area → verify context contains only that area"
+      - "Submit prompt → verify progress bar appears → verify user query logged"
+
+  critical_edge_case_testing:
+    scope: "Test operation combinations and edge cases for delete 404 bug"
+    purpose: |
+      Verify instanceID tracking works correctly across all operation types.
+      These tests specifically address the delete 404 issue and related edge cases.
+
+    test_scenarios:
+
+      basic_operations:
+        add_only:
+          prompt: "Create a cube at 0,0,0"
+          expected: "Cube created, instanceID returned, appears in scene context on next turn"
+          verify: "Next prompt can reference the cube by instanceID"
+
+        delete_only:
+          prompt: "Delete the cube"
+          expected: "Cube deleted, scene re-indexed, cube no longer in context"
+          verify: "Next prompt mentioning 'the cube' should get clear error (not 404)"
+
+        modify_only:
+          prompt: "Make the cube bigger"
+          expected: "Cube scale modified, scene re-indexed"
+          verify: "Cube still has same instanceID, can be referenced again"
+
+      sequential_operations:
+        add_then_modify:
+          turn_1: "Create a cube at 0,0,0"
+          turn_2: "Make it red"
+          expected: "Turn 1 returns instanceID, turn 2 uses same instanceID successfully"
+          verify: "Cube is red and still has same instanceID"
+
+        add_then_delete:
+          turn_1: "Create a cube at 0,0,0"
+          turn_2: "Delete the cube"
+          expected: "Turn 1 creates, turn 2 deletes using instanceID from turn 1"
+          verify: "Turn 3 cannot reference deleted cube, gets clear error message"
+
+        add_then_delete_then_add:
+          turn_1: "Create a cube at 0,0,0"
+          turn_2: "Delete the cube"
+          turn_3: "Create a sphere at 5,0,0"
+          expected: "Each operation succeeds, new sphere has different instanceID"
+          verify: "Cannot reference old cube, can reference new sphere"
+
+        modify_then_delete:
+          turn_1: "Create a cube"
+          turn_2: "Make it bigger"
+          turn_3: "Delete the cube"
+          expected: "All operations succeed in sequence"
+          verify: "Turn 4 cannot reference deleted cube"
+
+      batch_operations:
+        add_multiple:
+          prompt: "Create 3 cubes in a row"
+          expected: "3 cubes created, each with unique instanceID"
+          verify: "All 3 appear in scene context, can be individually referenced"
+
+        delete_multiple:
+          setup: "Scene has 3 cubes"
+          prompt: "Delete all cubes"
+          expected: "All 3 cubes deleted in single action batch"
+          verify: "Scene context empty, no cubes can be referenced"
+
+        modify_multiple:
+          setup: "Scene has 3 cubes"
+          prompt: "Make all cubes red"
+          expected: "All 3 cubes modified in single batch"
+          verify: "All cubes still have same instanceIDs, all are red"
+
+        mixed_batch:
+          prompt: "Create a cube, delete the sphere, make the bed red"
+          expected: "3 actions in one batch: instantiate, delete, modify"
+          verify: "All operations succeed, instanceIDs correctly tracked"
+
+      single_turn_add_and_modify:
+        scenario: "LLM proposes instantiate + modify in same tool call batch"
+        example: "Create a red cube at 0,0,0"
+        ai_behavior: |
+          May generate two actions:
+          1. instantiate cube
+          2. modify cube color
+        problem: "Action 2 needs instanceID from action 1, but action 1 hasn't executed yet"
+        expected_behavior: |
+          DynamicPlanApplier should:
+          - Execute actions sequentially
+          - Track newly created instanceIDs within batch
+          - Make new instanceIDs available to subsequent actions in same batch
+        verify: "Cube created and colored in single execution, no errors"
+
+      reference_after_delete:
+        turn_1: "Create a cube and a sphere"
+        turn_2: "Delete the cube"
+        turn_3: "Move the sphere to where the cube was"
+        expected: "Turn 3 fails to reference 'where the cube was' (cube context is gone)"
+        verify: "LLM should handle gracefully, either error or ask for clarification"
+
+      delete_nonexistent:
+        setup: "Empty scene"
+        prompt: "Delete the cube"
+        expected: "LLM should respond that no cube exists"
+        verify: "No 404 error, clear message"
+
+      modify_deleted:
+        turn_1: "Create a cube"
+        turn_2: "Delete the cube"
+        turn_3: "Make the cube bigger"
+        expected: "Turn 3 fails with clear error"
+        verify: "Error message says object no longer exists (not 404)"
+
+      component_management_edge_cases:
+        add_component_to_deleted:
+          turn_1: "Create a cube"
+          turn_2: "Delete the cube"
+          turn_3: "Add a Rigidbody to the cube"
+          expected: "Turn 3 fails, object doesn't exist"
+
+        modify_component_after_delete:
+          turn_1: "Create a cube"
+          turn_2: "Add a Rigidbody"
+          turn_3: "Delete the cube"
+          turn_4: "Set the Rigidbody mass to 10"
+          expected: "Turn 4 fails, object no longer exists"
+
+    testing_procedure:
+      for_each_scenario:
+        - "Start with clean scene"
+        - "Execute test scenario prompts in order"
+        - "Verify expected behavior at each step"
+        - "Check console for errors (should be none)"
+        - "Verify scene state matches expectations"
+        - "Test with Accept All button (batch execution)"
+        - "Test with individual action selection (partial execution)"
+
+    success_criteria:
+      - "No 404 errors in any scenario"
+      - "Clear error messages when referencing deleted objects"
+      - "instanceID tracking works across all operation types"
+      - "Batch operations execute correctly"
+      - "Scene context stays synchronized with actual scene state"
+      - "Accept All button works for all scenarios"
+
+  end_to_end_testing:
+    scope: "Test complete user workflows"
+    workflows:
+      - "New user setup (API key → scan → annotate → build first scene)"
+      - "Demo scene usage (select area → run example prompts → verify results)"
+      - "Multi-turn conversation (create → modify → delete → create different thing)"
+
+  asset_store_submission_testing:
+    requirements:
+      - "No console errors on fresh import"
+      - "All example scenes load without errors"
+      - "Demo scene prompts work as documented"
+      - "PDF guide accurately reflects current version"
+      - "Screenshots in PDF match current UI"
+      - "License file included"
+      - "No hardcoded API keys or secrets"
+
+## ═══════════════════════════════════════════════════════════════════════════════════
+## NOTES
+## ═══════════════════════════════════════════════════════════════════════════════════
+
+notes:
+  context_recovery: |
+    This YAML contains full implementation details including file paths, line numbers,
+    code snippets, and rationale. If context is compacted/summarized, this document
+    allows recovery of all necessary information to implement each feature.
+
+  price_point_justification: |
+    $29.99 price point justified by:
+    - Unique SLS architecture (deterministic placement)
+    - Comprehensive documentation (PDF guide + examples)
+    - Production-ready error handling
+    - Demo scene with pre-annotated prefabs
+    - Teachable system (prompt library)
+    - Multi-turn conversations
+    - Component management via reflection
+
+  asset_store_guidelines: |
+    Unity Asset Store requires:
+    - Complete documentation
+    - Example scenes/projects
+    - No console errors
+    - Clear installation instructions
+    - License information
+    - Support contact information
+
+  changelog: |
+    This document represents Version 1.0 for Asset Store release.
+    Future versions will add:
+    - Prefab filtering for context
+    - Persistent object IDs (cross-session)
+    - Async API calls (non-blocking UI)
+    - Physics-aware placement
+    - Undo/redo improvements

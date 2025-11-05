@@ -38,7 +38,9 @@ namespace ContextAwareSceneBuilder
             if (normal != Vector3.zero)
             {
                 Gizmos.color = Color.cyan;
-                Gizmos.DrawRay(transform.position, normal.normalized * 0.2f);
+                // Transform normal from local space to world space using object's rotation
+                Vector3 worldNormal = transform.TransformDirection(normal.normalized);
+                Gizmos.DrawRay(transform.position, worldNormal * 0.2f);
             }
         }
 #endif

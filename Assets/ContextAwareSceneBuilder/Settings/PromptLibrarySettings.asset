@@ -14,14 +14,41 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp-Editor::ContextAwareSceneBuilder.Editor.PromptLibrarySettings
   _prompts:
   - relativePath: Examples/Core/bed_against_wall.txt
-    enabled: 1
+    enabled: 0
+    autoEnabled: 0
   - relativePath: Examples/Core/lamp_on_scaled_table.txt
     enabled: 0
+    autoEnabled: 0
   - relativePath: Examples/Furniture/book_on_shelf.txt
     enabled: 0
+    autoEnabled: 0
   - relativePath: Diagnostics/analyze_error.txt
-    enabled: 1
+    enabled: 0
+    autoEnabled: 0
   - relativePath: Examples/Walls/wall_consistency.txt
     enabled: 0
+    autoEnabled: 0
   - relativePath: Examples/Core/wall_at_edge.txt
     enabled: 0
+    autoEnabled: 0
+  - relativePath: Examples/Beds/bed_in_corner.txt
+    enabled: 0
+    autoEnabled: 0
+  - relativePath: Reference/semantic_architecture.txt
+    enabled: 0
+    autoEnabled: 0
+  - relativePath: Reference/semantic_furniture.txt
+    enabled: 0
+    autoEnabled: 0
+  - relativePath: Reference/semantic_props.txt
+    enabled: 0
+    autoEnabled: 0
+  - relativePath: Core/sls_detailed_guide.txt
+    enabled: 1
+    autoEnabled: 0
+  - relativePath: Core/example_generation_instructions.txt
+    enabled: 1
+    autoEnabled: 0
+  - relativePath: Core/basic_instructions.txt
+    enabled: 0
+    autoEnabled: 0
