@@ -1,0 +1,2 @@
+Only show final results, not intermediate calculations.
+Still perform all verification silently.

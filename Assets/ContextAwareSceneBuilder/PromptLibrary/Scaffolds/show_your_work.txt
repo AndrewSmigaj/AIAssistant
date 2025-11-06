@@ -1,0 +1,3 @@
+Display all Step 0-8 calculations with actual values.
+Show verification math explicitly.
+For debugging and learning.

@@ -1,0 +1,3 @@
+NEVER ask for clarification. ALWAYS make your best guess.
+If the user wanted something specific, they would have said so.
+Still verify all math and collision detection.
