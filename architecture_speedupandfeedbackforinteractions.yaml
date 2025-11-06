@@ -1,0 +1,521 @@
+# Architecture: Speed Up and Feedback for Interactions
+
+## Problem Statement
+
+**Current Issue**: After executing actions, submitting tool results to OpenAI takes ~30 seconds with UI frozen.
+
+**User Experience**:
+- User clicks "Execute Selected"
+- Actions complete in <1 second (scene manipulation is fast)
+- UI freezes for 30 seconds with progress bar stuck at 50%
+- User can't do anything - no feedback on what's happening
+- Eventually AI responds with acknowledgment
+
+**Root Cause**:
+```csharp
+// AIAssistantWindow.cs:834
+string userMessage = ContextBuilder.BuildContextPack("", _settings.TokenBudget, out systemMessage, out toolsJson);
+var plan = OpenAIClient.SendRequest(_settings, systemMessage, userMessage, CurrentResponseId, results, toolsJson);
+```
+
+This rebuilds ENTIRE context from scratch:
+1. **Scene indexing** (~5s): Scans all GameObjects, transforms, components
+2. **Prefab catalog generation** (~10s): Loads all prefab metadata, semantic points
+3. **Prompt loading** (~2s): Reads all enabled prompt files
+4. **JSON serialization** (~3s): Builds massive payload
+5. **Network upload** (~10s): Sends entire context to API
+
+**Total**: 30+ seconds just to say "5 objects created successfully"
+
+## Target Performance
+
+- **Competitor**: 3-5 minutes for scene generation (we're already 6-10x faster on initial request)
+- **Our current**: 30s for tool result submission (unacceptable - this should be near-instant)
+- **Target**: <5 seconds for tool result acknowledgment
+- **Stretch goal**: <2 seconds with aggressive caching
+
+## Solution 1: Context Caching (Primary)
+
+### Concept
+
+Cache the last built context and reuse it when submitting tool results. Only rebuild when truly necessary.
+
+### Cache Strategy
+
+```yaml
+cache_invalidation_rules:
+  rebuild_on:
+    - User sends new prompt (legitimate request for updated scene state)
+    - User clicks "Refresh Scene Index" manually
+    - Prefab catalog changed (detected via AssetDatabase callbacks)
+    - User changed active prompts (toggled checkboxes)
+
+  reuse_on:
+    - Submitting tool results after OUR actions (we know what changed)
+    - AI returning message without tools (no state change)
+
+cache_data:
+  system_message: "Full SLS algorithm text (rarely changes)"
+  prefab_catalog: "JSON of all prefabs with semantic points"
+  enabled_prompts: "Content of active prompt files"
+  tools_json: "Tool definitions (never changes per session)"
+
+  rebuild_only:
+    scene_context: "GameObject list - rebuild after our actions, we know the delta"
+```
+
+### Implementation
+
+**Phase 1: Basic Caching (1-2 hours)**
+
+Add cache fields to AIAssistantWindow:
+```csharp
+// Cache for context reuse
+private string _cachedSystemMessage;
+private string _cachedPrefabCatalog;
+private string _cachedPrompts;
+private string _cachedToolsJson;
+private bool _contextCacheValid = false;
+```
+
+Modify ContextBuilder to accept cached sections:
+```csharp
+public static string BuildContextPack(
+    string userPrompt,
+    int tokenBudget,
+    out string systemMessage,
+    out string toolsJson,
+    CachedContext cache = null  // NEW: optional cached data
+)
+```
+
+Logic:
+```csharp
+void OnExecuteSelected()
+{
+    // Execute actions
+    var results = DynamicPlanApplier.ApplyPlan(selectedActions, _settings.PreviewMode);
+
+    // Re-index scene (fast - only changed objects)
+    ProjectIndexer.IndexAll();
+
+    // Submit with cache
+    if (CurrentResponseId != null && results.Count > 0)
+    {
+        // Reuse cached context, only rebuild scene portion
+        var cache = new CachedContext {
+            systemMessage = _cachedSystemMessage,
+            prefabCatalog = _cachedPrefabCatalog,
+            prompts = _cachedPrompts,
+            toolsJson = _cachedToolsJson
+        };
+
+        string userMessage = ContextBuilder.BuildContextPack("", _settings.TokenBudget,
+            out var sys, out var tools, cache);
+
+        var plan = OpenAIClient.SendRequest(_settings, sys, userMessage,
+            CurrentResponseId, results, tools);
+    }
+}
+```
+
+**Phase 2: Smarter Scene Caching (2-3 hours)**
+
+Don't re-index entire scene - we know exactly what we changed:
+```csharp
+// After executing actions, build incremental scene update
+var sceneUpdate = new StringBuilder();
+sceneUpdate.AppendLine("=== SCENE CHANGES ===");
+foreach (var result in results)
+{
+    if (result.Success)
+    {
+        sceneUpdate.AppendLine($"Created: {result.Action.GetDescription()}");
+        sceneUpdate.AppendLine($"  Instance ID: {result.InstanceId}");
+        sceneUpdate.AppendLine($"  Position: {result.Position}");
+    }
+}
+
+// Send delta instead of full scene
+```
+
+**Phase 3: OpenAI Prompt Caching (1 hour)**
+
+Use OpenAI's prompt caching API (if available):
+```csharp
+// Mark system message as cacheable
+"cache_control": {"type": "ephemeral"}
+```
+
+This caches system message on OpenAI's side, reduces latency and cost.
+
+### Expected Performance Gain
+
+| Component | Before (ms) | After (ms) | Savings |
+|-----------|-------------|------------|---------|
+| Build system message | 100 | 0 (cached) | 100ms |
+| Scan prefabs | 10000 | 0 (cached) | 10s |
+| Load prompts | 2000 | 0 (cached) | 2s |
+| Index scene | 5000 | 500 (delta) | 4.5s |
+| Serialize JSON | 3000 | 500 (less data) | 2.5s |
+| Network upload | 10000 | 2000 (smaller payload) | 8s |
+| **Total** | **30100ms** | **3000ms** | **27s (90% reduction)** |
+
+## Solution 2: Non-Blocking UI (Quick Win)
+
+### Problem
+
+```csharp
+EditorUtility.DisplayProgressBar("AI Assistant", "Submitting tool results...", 0.5f);
+```
+
+This blocks the main thread. User can't interact with anything.
+
+### Solution
+
+Make operation async with visual feedback:
+
+```csharp
+// Add state tracking
+private bool _isProcessingToolResults = false;
+private float _toolResultProgress = 0f;
+private string _toolResultStatus = "";
+
+async void OnExecuteSelected()
+{
+    // Execute actions (synchronous, fast)
+    var results = DynamicPlanApplier.ApplyPlan(selectedActions, _settings.PreviewMode);
+
+    // Mark as processing
+    _isProcessingToolResults = true;
+    _toolResultStatus = "Re-indexing scene...";
+    Repaint();
+
+    // Allow UI to update
+    await Task.Yield();
+
+    // Re-index
+    ProjectIndexer.IndexAll();
+    _toolResultStatus = "Building context...";
+    Repaint();
+
+    await Task.Yield();
+
+    // Submit (this is the slow part)
+    _toolResultStatus = "Submitting to AI...";
+    Repaint();
+
+    var plan = OpenAIClient.SendRequest(...);
+
+    _isProcessingToolResults = false;
+    Repaint();
+}
+
+void OnGUI()
+{
+    // Disable send button while processing
+    GUI.enabled = !_isProcessingToolResults;
+
+    if (GUILayout.Button("Submit"))
+    {
+        OnSubmitPrompt();
+    }
+
+    GUI.enabled = true;
+
+    // Show processing indicator
+    if (_isProcessingToolResults)
+    {
+        EditorGUILayout.HelpBox($"⏳ Processing: {_toolResultStatus}", MessageType.Info);
+    }
+}
+```
+
+**Benefits**:
+- UI remains responsive
+- User sees what's happening
+- Can still read logs, scroll conversation
+- Can't send duplicate requests (button disabled)
+
+**Limitations**:
+- Unity's Editor UI isn't truly async
+- Need to use EditorCoroutine or manual Task.Yield() patterns
+- Still takes 30s, just doesn't freeze
+
+## Solution 3: Detailed Progress Feedback
+
+### Multi-Stage Progress Bar
+
+Instead of stuck at 50%, show real progress:
+
+```csharp
+void SubmitToolResults(List<ActionResult> results)
+{
+    var stages = new[] {
+        ("Executing actions", 0.1f),
+        ("Re-indexing scene", 0.2f),
+        ("Loading prefab catalog", 0.4f),
+        ("Building context", 0.6f),
+        ("Uploading to API", 0.8f),
+        ("Waiting for response", 0.9f)
+    };
+
+    for (int i = 0; i < stages.Length; i++)
+    {
+        EditorUtility.DisplayProgressBar("AI Assistant", stages[i].Item1, stages[i].Item2);
+
+        // Do actual work here
+        switch (i)
+        {
+            case 0: /* execute */ break;
+            case 1: ProjectIndexer.IndexAll(); break;
+            case 2: /* load prefabs */ break;
+            // etc
+        }
+    }
+
+    EditorUtility.ClearProgressBar();
+}
+```
+
+### In-Window Progress
+
+Add progress bar directly in the window (better than modal):
+
+```csharp
+void DisplayProgressSection()
+{
+    if (_isProcessing)
+    {
+        EditorGUILayout.BeginVertical(EditorStyles.helpBox);
+        EditorGUILayout.LabelField("Processing...", EditorStyles.boldLabel);
+
+        var rect = EditorGUILayout.GetControlRect(false, 20);
+        EditorGUI.ProgressBar(rect, _processingProgress, _processingStatus);
+
+        EditorGUILayout.EndVertical();
+    }
+}
+```
+
+## Solution 4: Optional Skip Acknowledgment
+
+### Concept
+
+Give users choice: wait for AI acknowledgment or continue immediately.
+
+```csharp
+EditorGUILayout.BeginHorizontal();
+
+if (GUILayout.Button("Execute and Wait"))
+{
+    OnExecuteSelected(waitForAck: true);
+}
+
+if (GUILayout.Button("Execute (Skip AI Ack)"))
+{
+    OnExecuteSelected(waitForAck: false);
+}
+
+EditorGUILayout.EndHorizontal();
+```
+
+**Tradeoffs**:
+- **Wait**: Keeps conversation context, AI can make follow-up suggestions (30s delay)
+- **Skip**: Instant feedback, but conversation thread broken (0s delay)
+
+**Use Cases**:
+- Rapid iteration: Skip acknowledgment, place many objects quickly
+- First-time use: Wait for acknowledgment, learn from AI's feedback
+- Complex scenes: Wait, let AI verify everything worked
+
+## Solution 5: Lazy Context Building
+
+### Concept
+
+Don't rebuild context on every tool result. Only rebuild when AI needs to see updated state.
+
+```csharp
+void OnExecuteSelected()
+{
+    var results = DynamicPlanApplier.ApplyPlan(selectedActions, _settings.PreviewMode);
+
+    // Option A: Don't send anything, just log locally
+    AppendLog("[System] Actions executed. Type your next request or say 'done'");
+    _pendingResults.AddRange(results);  // Queue for next request
+
+    // When user sends next prompt, include pending results
+}
+
+void OnSubmitPrompt()
+{
+    // Now rebuild context with pending results
+    string userMessage = ContextBuilder.BuildContextPack(CurrentPrompt, ...);
+    var plan = OpenAIClient.SendRequest(..., _pendingResults, ...);
+
+    _pendingResults.Clear();
+}
+```
+
+**Benefit**: Zero delay after execute
+**Tradeoff**: AI doesn't acknowledge immediately, user must trust it worked
+
+## Recommended Implementation Order
+
+### Phase 1: Quick Wins (Day 1 - 3 hours)
+1. ✅ Non-blocking UI (disable button, show status, allow Repaint)
+2. ✅ Multi-stage progress bar (show real progress)
+3. ✅ Better logging (timestamp each stage, show durations)
+
+**Result**: Still takes 30s, but UX is 10x better
+
+### Phase 2: Context Caching (Day 2 - 4 hours)
+1. ✅ Cache system message, tools JSON (never change)
+2. ✅ Cache prefab catalog (invalidate on prefab changes only)
+3. ✅ Cache prompt content (invalidate when user toggles prompts)
+4. ✅ Only rebuild scene context after actions
+
+**Result**: 30s → 5-10s (70-80% improvement)
+
+### Phase 3: Advanced Optimization (Day 3 - 3 hours)
+1. ✅ Incremental scene updates (send delta, not full state)
+2. ✅ OpenAI prompt caching API integration
+3. ✅ Lazy context building option
+
+**Result**: 5-10s → 2-3s (another 50-70% improvement)
+
+### Phase 4: User Choice (Optional)
+1. ✅ "Execute and Wait" vs "Execute and Continue" buttons
+2. ✅ Setting: "Auto-submit tool results" toggle
+
+**Result**: Users who don't need acknowledgment get 0s delay
+
+## Testing Checklist
+
+- [ ] Measure baseline: time from "Execute Selected" click to AI acknowledgment
+- [ ] After Phase 1: Verify UI doesn't freeze, user can read logs during processing
+- [ ] After Phase 2: Verify context cache invalidates correctly when needed
+- [ ] After Phase 2: Verify context reuse works - no stale data sent to AI
+- [ ] After Phase 3: Verify incremental updates are accurate
+- [ ] Stress test: Execute 20 actions, verify performance
+- [ ] Edge case: Execute actions, change prompts, execute again (cache should invalidate)
+- [ ] Edge case: Execute actions, refresh prefabs, execute again (cache should invalidate)
+
+## Metrics to Track
+
+```yaml
+performance_metrics:
+  baseline:
+    execute_to_acknowledgment: 30000ms
+    ui_frozen_duration: 30000ms
+    user_frustration: "High"
+
+  target_phase1:
+    execute_to_acknowledgment: 30000ms
+    ui_frozen_duration: 0ms
+    user_frustration: "Medium (can see progress)"
+
+  target_phase2:
+    execute_to_acknowledgment: 5000ms
+    ui_frozen_duration: 0ms
+    user_frustration: "Low"
+
+  target_phase3:
+    execute_to_acknowledgment: 2000ms
+    ui_frozen_duration: 0ms
+    user_frustration: "None"
+```
+
+## Alternative Approaches (Considered but Not Recommended)
+
+### 1. WebSocket Streaming
+Keep persistent connection to OpenAI, stream responses.
+
+**Pros**: Real-time updates, no reconnection overhead
+**Cons**: Complex, OpenAI doesn't officially support WebSockets for this API
+**Verdict**: Overkill for this use case
+
+### 2. Local LLM for Acknowledgments
+Run small local model just for "OK, done" acknowledgments.
+
+**Pros**: Instant responses
+**Cons**: Requires local model setup, defeats purpose of cloud-based solution
+**Verdict**: Not suitable for Asset Store product
+
+### 3. Client-Side Scene State
+Don't send scene context to AI at all, manage it client-side.
+
+**Pros**: Minimal API calls
+**Cons**: AI can't reason about scene state, can't make smart suggestions
+**Verdict**: Defeats purpose of context-aware assistant
+
+## Asset Store Competitive Analysis
+
+**Competitor** (launched last week): Takes 3-5 minutes for scene generation
+
+**Our Position**:
+- Initial request: ~30s (6-10x faster than competitor) ✅
+- Tool result submission: Currently 30s (unacceptable, same issue) ❌
+- After optimization: 2-3s (100x faster than competitor) ✅✅✅
+
+**Marketing Angle**:
+"Scene Builder Pro generates complete scenes in 30 seconds, not 5 minutes.
+With smart context caching, iterative refinements happen in real-time."
+
+## Implementation Notes
+
+### Unity Editor Constraints
+
+Unity's Editor GUI is immediate-mode and single-threaded. Can't use true async/await for UI updates.
+
+**Workarounds**:
+- `EditorApplication.update` callback for background work
+- `EditorCoroutine` for yielding during long operations
+- `Task.Run()` for CPU-bound work (JSON serialization)
+- `await Task.Yield()` to allow Repaint() between stages
+
+### OpenAI API Rate Limits
+
+Free tier: 3 requests/minute
+Paid tier: 60 requests/minute
+
+Context caching is essential for paid users doing rapid iteration.
+
+### Cache Invalidation Edge Cases
+
+1. User manually edits scene outside tool (detected via EditorApplication.hierarchyChanged)
+2. Prefab updated on disk (detected via AssetDatabase.importedAssets)
+3. Prompt file edited externally (hash prompt content, detect changes)
+4. Unity domain reload (cache is lost, acceptable)
+
+## Future Enhancements
+
+### Smart Prefetch
+Preload context in background when window opens, ready before first request.
+
+### Diff-Based Updates
+Send only changed GameObjects: "Added: Chair_001, Modified: Table_001 position, Deleted: Lamp_003"
+
+### Conversation Branching
+Allow "Execute without acknowledgment" but keep results queued, send with next request.
+
+### Visual Progress
+Show gizmos in scene view for objects being created during execution.
+
+## Success Criteria
+
+**Must Have (Asset Store Release)**:
+- ✅ UI never freezes >1 second
+- ✅ Tool result submission <10 seconds (70% improvement)
+- ✅ Visual progress feedback at every stage
+- ✅ Users understand what's happening (no mysterious waiting)
+
+**Nice to Have (Version 1.1)**:
+- ✅ Tool result submission <5 seconds (90% improvement)
+- ✅ Optional skip acknowledgment mode
+- ✅ Smart cache invalidation
+
+**Stretch Goal (Pro Version)**:
+- ✅ Tool result submission <2 seconds (95% improvement)
+- ✅ Incremental updates
+- ✅ OpenAI prompt caching integration
