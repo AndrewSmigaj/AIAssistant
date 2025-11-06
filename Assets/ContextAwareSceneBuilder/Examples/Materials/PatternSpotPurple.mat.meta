@@ -11,5 +11,5 @@ AssetOrigin:
   productId: 257122
   packageName: Interior House Assets | URP
   packageVersion: 1.0
-  assetPath: Assets/UnityTechnologies/Basic Asset Pack Interior/Materials/PatternSpotPurple.mat
+  assetPath: Assets/ContextAwareSceneBuilder/Examples/Materials/PatternSpotPurple.mat
   uploadId: 615370

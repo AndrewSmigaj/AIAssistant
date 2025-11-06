@@ -109,5 +109,5 @@ AssetOrigin:
   productId: 257122
   packageName: Interior House Assets | URP
   packageVersion: 1.0
-  assetPath: Assets/UnityTechnologies/Basic Asset Pack Interior/Models/Floor/Floor2m.FBX
+  assetPath: Assets/ContextAwareSceneBuilder/Examples/Models/Floor/Floor2m.FBX
   uploadId: 615370

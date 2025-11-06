@@ -82,14 +82,6 @@ namespace ContextAwareSceneBuilder.Editor
             GUILayout.Label("Semantic Annotator", EditorStyles.boldLabel);
             GUILayout.FlexibleSpace();
 
-            if (GUILayout.Button("Refresh Prefabs", EditorStyles.toolbarButton, GUILayout.Width(120)))
-            {
-                // Trigger full rescan to pick up prefab changes
-                PrefabScanner.ScanAll();
-                PrefabRegistryCache.Invalidate();
-                LoadPrefabList();
-            }
-
             if (GUILayout.Button("Initialize Semantic Points", EditorStyles.toolbarButton, GUILayout.Width(160)))
             {
                 InitializeSemanticPointsForAll();
@@ -236,10 +228,17 @@ namespace ContextAwareSceneBuilder.Editor
                 CreateDirectionalPoints();
             }
 
-            if (GUILayout.Button("Rotate Directions"))
+            EditorGUILayout.BeginHorizontal();
+            if (GUILayout.Button("Rotate Y-axis (Horizontal)"))
             {
-                RotateDirectionalPoints();
+                RotateDirectionalPointsYAxis();
             }
+
+            if (GUILayout.Button("Rotate X-axis (Vertical)"))
+            {
+                RotateDirectionalPointsXAxis();
+            }
+            EditorGUILayout.EndHorizontal();
         }
 
         /// <summary>
@@ -618,7 +617,7 @@ namespace ContextAwareSceneBuilder.Editor
         /// CRITICAL: Normals NEVER change (they describe truthful geometry).
         /// Only names get reassigned.
         /// </summary>
-        void RotateDirectionalPoints()
+        void RotateDirectionalPointsYAxis()
         {
             if (string.IsNullOrEmpty(_selectedPrefabPath))
             {
@@ -664,6 +663,70 @@ namespace ContextAwareSceneBuilder.Editor
                     "• right → front\n" +
                     "• back → right\n" +
                     "• left → back\n\n" +
+                    "Normals remain unchanged (truthful to geometry).\n" +
+                    "Click 'Refresh Prefabs' to recalculate R_ls.",
+                    "OK");
+            }
+            finally
+            {
+                PrefabUtility.UnloadPrefabContents(prefabContents);
+            }
+
+            Repaint();
+        }
+
+        /// <summary>
+        /// Rotates directional point naming by 90° around X-axis.
+        /// Used for objects lying on their side (e.g., paddle where handle is "back" but should be "top").
+        /// CRITICAL: Normals NEVER change (they describe truthful geometry).
+        /// Only names get reassigned.
+        /// </summary>
+        void RotateDirectionalPointsXAxis()
+        {
+            if (string.IsNullOrEmpty(_selectedPrefabPath))
+            {
+                Debug.LogWarning("[Semantic Annotator] No prefab selected");
+                return;
+            }
+
+            GameObject prefabContents = PrefabUtility.LoadPrefabContents(_selectedPrefabPath);
+            try
+            {
+                Transform container = prefabContents.transform.Find("SemanticPoints");
+                if (container == null)
+                {
+                    EditorUtility.DisplayDialog("Error", "No SemanticPoints container found. Create directional points first.", "OK");
+                    return;
+                }
+
+                // Get the 4 vertical points by their current names
+                Transform oldFront = container.Find("front");
+                Transform oldBack = container.Find("back");
+                Transform oldTop = container.Find("top");
+                Transform oldBottom = container.Find("bottom");
+
+                if (oldFront == null || oldBack == null || oldTop == null || oldBottom == null)
+                {
+                    EditorUtility.DisplayDialog("Error", "Not all vertical directional points found. Create directional points first.", "OK");
+                    return;
+                }
+
+                // Cycle names: back→top, top→front, front→bottom, bottom→back
+                // CRITICAL: Normals stay unchanged (truthful to geometry)
+                oldBack.name = "top";
+                oldTop.name = "front";
+                oldFront.name = "bottom";
+                oldBottom.name = "back";
+
+                PrefabUtility.SaveAsPrefabAsset(prefabContents, _selectedPrefabPath);
+                Debug.Log("[Semantic Annotator] Rotated directional point naming by 90° around X-axis");
+
+                EditorUtility.DisplayDialog("Success",
+                    "Rotated directional point naming by 90° around X-axis.\n\n" +
+                    "• back → top\n" +
+                    "• top → front\n" +
+                    "• front → bottom\n" +
+                    "• bottom → back\n\n" +
                     "Normals remain unchanged (truthful to geometry).\n" +
                     "Click 'Refresh Prefabs' to recalculate R_ls.",
                     "OK");

@@ -10,5 +10,5 @@ AssetOrigin:
   productId: 257122
   packageName: Interior House Assets | URP
   packageVersion: 1.0
-  assetPath: Assets/UnityTechnologies/Basic Asset Pack Interior/Prefabs/Lights/LampSmall.prefab
+  assetPath: Assets/ContextAwareSceneBuilder/Examples/Prefabs/Lights/LampSmall.prefab
   uploadId: 615370

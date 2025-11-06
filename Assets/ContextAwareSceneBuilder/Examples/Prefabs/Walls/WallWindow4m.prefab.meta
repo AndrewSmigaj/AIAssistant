@@ -10,5 +10,5 @@ AssetOrigin:
   productId: 257122
   packageName: Interior House Assets | URP
   packageVersion: 1.0
-  assetPath: Assets/UnityTechnologies/Basic Asset Pack Interior/Prefabs/Walls/WallWindow4m.prefab
+  assetPath: Assets/ContextAwareSceneBuilder/Examples/Prefabs/Walls/WallWindow4m.prefab
   uploadId: 615370

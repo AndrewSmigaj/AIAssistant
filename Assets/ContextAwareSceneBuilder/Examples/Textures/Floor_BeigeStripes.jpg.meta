@@ -126,5 +126,5 @@ AssetOrigin:
   productId: 257122
   packageName: Interior House Assets | URP
   packageVersion: 1.0
-  assetPath: Assets/UnityTechnologies/Basic Asset Pack Interior/Textures/Floor_BeigeStripes.jpg
+  assetPath: Assets/ContextAwareSceneBuilder/Examples/Textures/Floor_BeigeStripes.jpg
   uploadId: 615370

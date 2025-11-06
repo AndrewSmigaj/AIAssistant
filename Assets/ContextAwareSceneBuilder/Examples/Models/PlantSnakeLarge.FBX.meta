@@ -109,5 +109,5 @@ AssetOrigin:
   productId: 257122
   packageName: Interior House Assets | URP
   packageVersion: 1.0
-  assetPath: Assets/UnityTechnologies/Basic Asset Pack Interior/Models/PlantSnakeLarge.FBX
+  assetPath: Assets/ContextAwareSceneBuilder/Examples/Models/PlantSnakeLarge.FBX
   uploadId: 615370

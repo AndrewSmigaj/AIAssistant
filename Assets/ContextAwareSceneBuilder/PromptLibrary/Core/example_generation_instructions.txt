@@ -39,3 +39,39 @@ Examples: (to be created - rigidbody, collider, etc.)
 - Use quaternions [x,y,z,w] for rotations (NEVER Euler)
 - Explain WHY each step matters (educational value)
 - Keep examples focused (one concept per example)
+
+## CRITICAL: How to Save Examples
+
+When you've created example content, you MUST use the savePromptFile tool to propose the example file.
+
+**Tool Usage**:
+```
+savePromptFile(
+  relativePath: "Examples/[Category]/[descriptive_name].txt",
+  content: "[Complete example with SLS Steps 0-9b]"
+)
+```
+
+**File Naming**:
+- Examples/Furniture/lamp_on_table.txt
+- Examples/Architecture/wall_at_edge.txt
+- Examples/Props/book_on_shelf.txt
+- Examples/Behaviors/add_rigidbody.txt
+
+**Content Format**:
+Each example file MUST include complete SLS Steps 0-9b:
+- Step 0: Write down scales and R_ls
+- Step 1: Identify semantic relationship
+- Step 2-9b: Complete placement algorithm with actual calculations
+
+**Workflow**:
+1. User asks to create/refine an example
+2. You generate the complete example content (Steps 0-9b)
+3. You call savePromptFile with appropriate path and content
+4. User reviews in preview pane and clicks "Save Example"
+5. User tests with "Rerun Prompt" to verify it works
+6. User provides feedback on any issues
+7. You call savePromptFile again with corrections
+8. Repeat until perfect
+
+IMPORTANT: Always call savePromptFile after generating example content. Don't just show the content in your message - use the tool so the user can save it.
