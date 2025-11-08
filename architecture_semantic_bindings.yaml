@@ -552,18 +552,6 @@ validation:
       rule: Compute and store slsAdapters and derived SLS points
       note: Existing behavior, unchanged
 
-  dry_run_mode:
-    description: Validation without scene changes
-    purpose: Debug placement calculations before committing
-
-    flag: dryRun: true
-
-    output:
-      - Computed transforms (position, rotation, scale)
-      - Resolved bindings
-      - Validation report (all checks pass/fail)
-      - No scene modifications
-
 edge_cases:
 
   wall_rotated_and_scaled:
@@ -611,10 +599,6 @@ performance:
     principle: All inference and validation before calling instantiateObjects
     reason: Tool calls take minutes, compute everything once
 
-  dry_run_for_debugging:
-    usage: Test complex placements without scene modifications
-    benefit: Iterate on calculations without tool call cost
-
   batch_object_creation:
     principle: Create multiple objects in single instantiateObjects call
     benefit: Amortize tool call overhead
@@ -649,11 +633,6 @@ tool_api:
           parameters: { type: object, optional: true }
           bindings: { type: object, optional: true }      # NEW
           roomBindings: { type: object, optional: true }  # NEW
-
-      dryRun:  # NEW
-        type: boolean
-        default: false
-        description: Validate without creating objects
 
     example_batch_with_proposed_fields:
       note: This example shows PROPOSED bindings and roomBindings fields
@@ -1012,7 +991,6 @@ implementation:
     optional:
       - Query API: GetRoomObjects(roomName)
       - Validation API: ValidateBindings(object)
-      - Dry-run mode implementation
       - Visual debugging in editor
 
   indexing:
@@ -1028,7 +1006,6 @@ final_verdict: |
   - Selection priority for deterministic matching
   - Constants for tolerances and defaults
   - Validation rules and error handling
-  - Dry-run mode for debugging
   - Lifecycle persistence and versioning
 
   The LLM has everything needed to compute SLS-correct placements in one shot
