@@ -1,0 +1,1035 @@
+title: Semantic Bindings Architecture
+version: 1.0
+status: design - PROPOSED ENHANCEMENT
+created: 2025-11-07
+reviewed_by: GPT5
+
+IMPORTANT_DISTINCTION: |
+  This document describes a PROPOSED ENHANCEMENT to the existing system.
+
+  CURRENT IMPLEMENTATION (as of 2025-11-07):
+  - Tool name: instantiateObjects (plural, batch operation)
+  - Location: DynamicToolGenerator.cs line 68, InstantiatePrefabAction.cs
+  - Parameters: prefabPath, name, position, rotation (quaternion), scale, parameters (flat dict)
+  - Scene context: instanceId, name, active, position, rotation (EULER - inconsistent!), scale, childCount,
+                   slsAdapters {pivotWorld, rotationSLSToWorld (quaternion)}, semanticPoints
+  - NO bindings or roomBindings fields exist yet
+
+  PROPOSED CHANGES:
+  1. Add "bindings" field to tool parameters and scene context
+  2. Add "roomBindings" field to tool parameters and scene context
+  3. Fix rotation inconsistency: Use quaternions everywhere (change ProjectIndexer.cs line 118)
+  4. Implement target query resolver
+  5. Implement face resolution logic
+
+overview: |
+  Documents placement relationships and room associations at creation time.
+
+  Two structures:
+  1. roomBindings - on structural instances (walls, floors, ceilings) to label faces per room
+  2. bindings - on all created objects, records contact/adjacent/room computed during placement
+
+  Benefits:
+  - Placement computed once at creation (no extra tool calls)
+  - Low-token targeting: "room:Kitchen type:Wall" resolves correct face
+  - Math-compatible with SLS (LOCAL→SLS→WORLD)
+  - Generalizable: works with or without room tags
+  - Deterministic layout with adjacency tracking
+
+constants:
+  clearance_default: 0.0  # meters
+  gap_default: 0.05       # meters, for adjacent if omitted
+  vertical_tolerance: 0.01  # meters, for Y-axis verification
+  quaternion_epsilon: 1.0e-6  # normalize after multiply, fallback to identity if len < epsilon
+  exterior_token: "__EXTERIOR__"
+
+data_structures:
+
+  roomBindings:
+    location: On structural instances (walls, floors, ceilings)
+
+    purpose: Label which room is on which face of a surface
+
+    schema:
+      type: object
+      properties:
+        front: { type: string }   # room name or "__EXTERIOR__"
+        back: { type: string }    # room name or "__EXTERIOR__"
+        top: { type: string }     # room name or "__EXTERIOR__"
+        bottom: { type: string }  # room name or "__EXTERIOR__"
+        left: { type: string }    # rare
+        right: { type: string }   # rare
+
+    rules:
+      - Use "__EXTERIOR__" (string) for exterior faces, not null
+      - When wall segment is cut by door/window, ensure roomBindings on segment instances
+      - Face points must remain valid and continuous after cuts
+
+    examples:
+      shared_wall:
+        instanceId: 173
+        name: Wall_East_03
+        type: Wall
+        roomBindings:
+          front: Kitchen
+          back: Hall
+
+      exterior_wall:
+        instanceId: 174
+        name: Wall_North_Exterior
+        type: Wall
+        roomBindings:
+          front: LivingRoom
+          back: "__EXTERIOR__"
+
+      ground_floor:
+        instanceId: 91
+        name: Floor_L1
+        type: Floor
+        roomBindings:
+          top: Kitchen
+          bottom: "__EXTERIOR__"
+
+      multi_story_floor:
+        instanceId: 92
+        name: Floor_L2
+        type: Floor
+        roomBindings:
+          top: Bedroom2
+          bottom: LivingRoom
+
+  bindings:
+    location: On all created objects (walls, floors, props, furniture)
+
+    purpose: Record placement relationships computed during creation
+
+    schema:
+      type: object
+      properties:
+        contact:
+          description: Primary physical contact defining alignment
+          type: object
+          required: [side, target]
+          properties:
+            side:
+              type: string
+              enum: [bottom, top, left, right, front, back]
+              description: Which semantic point was used in alignment math
+
+            target:
+              type: string | object
+              description: |
+                Query to resolve target instance. String or object form.
+                String: "id:173" | "name:Wall_01" | "room:Kitchen type:Wall"
+                Object: { "room": "Kitchen", "type": "Wall" }
+              examples:
+                - "id:173"
+                - "name:Wall_East_03"
+                - "room:Kitchen type:Wall"
+                - { "room": "Kitchen", "type": "Wall" }
+                - { "room": "Kitchen", "type": "Floor" }
+
+            targetSide:
+              type: string
+              enum: [bottom, top, left, right, front, back]
+              optional: true
+              description: |
+                Which face of target to align to.
+                If omitted and room is present, auto-select from roomBindings.
+
+        adjacent:
+          description: Lateral relationships (side-by-side placement)
+          type: array
+          optional: true
+          items:
+            type: object
+            properties:
+              mySide:
+                type: string
+                enum: [left, right, front, back]
+              target:
+                type: string
+                description: Instance ID or name
+              theirSide:
+                type: string
+                enum: [left, right, front, back]
+              gap:
+                type: number
+                optional: true
+                default: 0.05
+                description: Distance in meters
+
+        room:
+          type: string
+          optional: true
+          description: Room label copied from contacted surface's roomBindings
+
+    bindingsVersion:
+      type: integer
+      default: 1
+      description: Schema version for future compatibility
+
+target_resolution:
+
+  query_grammar:
+    description: How to specify target objects in bindings.contact.target
+
+    string_form:
+      syntax: "key:value [key:value ...]"
+      allowed_keys:
+        - id (instance ID)
+        - name (instance name)
+        - type (prefab type)
+        - room (room name from roomBindings)
+        - tag (semantic tag from prefab)
+      examples:
+        - "id:173"
+        - "name:Wall_East_03"
+        - "room:Kitchen type:Wall"
+        - "room:Kitchen type:Floor"
+        - "room:__EXTERIOR__ type:Wall"
+        - "type:Wall tag:exterior"
+
+    object_form:
+      syntax: { "key": "value", ... }
+      examples:
+        - { "room": "Kitchen", "type": "Wall" }
+        - { "room": "Kitchen", "type": "Floor" }
+        - { "id": "173" }
+        - { "name": "Table_01" }
+
+    normalization:
+      description: Resolver should normalize both forms to same internal representation
+
+  selection_rules:
+    description: When multiple instances match a target query
+
+    priority:
+      1: Smallest distance to room centroid (if room specified)
+      2: Creation order (instanceId ascending)
+      3: Name sort (alphabetical)
+
+    determinism:
+      rule: Always place larger footprints first when multiple adjacent items share surface
+      reason: Easier to fit small items around large ones
+
+  face_resolution:
+    description: Auto-select face when room is specified
+
+    rule_for_walls:
+      when: "room:Kitchen type:Wall" and targetSide omitted
+      logic: |
+        Choose face f ∈ {front, back} where roomBindings[f] == "Kitchen"
+        If both faces map to rooms but neither matches, FAIL with clear error
+        If one face is "__EXTERIOR__" and other matches room, use matching face
+
+    rule_for_floors:
+      when: "room:Kitchen type:Floor" and targetSide omitted
+      logic: |
+        Default: Use "top" for objects standing on floor
+        Choose face f ∈ {top, bottom} where roomBindings[f] == "Kitchen"
+        If object is hanging from ceiling above, specify targetSide explicitly
+
+    rule_for_ceilings:
+      when: "room:Kitchen type:Ceiling" and targetSide omitted
+      logic: |
+        Default: Use "bottom" for objects hanging from ceiling
+        Choose face f ∈ {top, bottom} where roomBindings[f] == "Kitchen"
+        Note: Ceiling.bottom faces downward into room, ceiling.top faces upward into room above
+
+    error_handling:
+      - If no face matches room: "Wall_East_03 has no face assigned to room 'Kitchen'"
+      - If multiple faces match and ambiguous: "Multiple faces match, specify targetSide"
+      - If room matches but default face is wrong: Specify targetSide explicitly (e.g., object on multi-story floor bottom)
+
+scene_integration:
+
+  current_scene_context_format:
+    description: Actual structure from ProjectIndexer.cs lines 113-200
+    issue: Rotation field uses Euler angles (line 118), but tool input and slsAdapters use quaternions
+
+    current_fields:
+      instanceId: int (Unity instance ID)
+      name: string (GameObject name)
+      active: bool (activeInHierarchy)
+      position: Vector3 array [x, y, z]
+      rotation: Vector3 array [x, y, z] (Euler from transform.eulerAngles - INCONSISTENT)
+      scale: Vector3 array [x, y, z]
+      childCount: int
+      slsAdapters:
+        pivotWorld: Vector3 array (p_wl)
+        rotationSLSToWorld: Quaternion array [x, y, z, w] (R_ws)
+      semanticPoints: Array of 7-value tuples [name, offset_x, offset_y, offset_z, normal_x, normal_y, normal_z]
+
+  proposed_changes:
+    fix_rotation_inconsistency:
+      change: ProjectIndexer.cs line 118
+      from: transform.eulerAngles (Vector3 Euler)
+      to: transform.rotation (Quaternion)
+      reason: |
+        - Eliminates gimbal lock issues
+        - More precise (no conversion losses)
+        - Consistent with tool input format
+        - Matches slsAdapters format
+
+    add_new_fields:
+      roomBindings: object (for walls/floors/ceilings)
+      bindings: object (for all instances)
+
+  structural_instances:
+    example_wall:
+      instanceId: 173
+      name: Wall_East_03
+      active: true
+      position: [2.0, 0.0, 0.0]
+      rotation: [0, 0.7071, 0, 0.7071]  # PROPOSED: Quaternion (90° Y rotation)
+      scale: [1, 1, 1]
+      childCount: 1
+      slsAdapters:
+        pivotWorld: [2.0, 0.0, 0.0]
+        rotationSLSToWorld: [0, 0.7071, 0, 0.7071]
+      semanticPoints:
+        - [front, 0, 1.5, 2.0, 0, 0, 1]
+        - [back,  0, 1.5,-2.0, 0, 0,-1]
+        - [bottom, 0, 0, -0.061, 0, -1, 0]
+      roomBindings:  # PROPOSED
+        front: Kitchen
+        back: Hall
+      bindings:  # PROPOSED
+        bindingsVersion: 1
+        contact:
+          side: bottom
+          target: "room:Kitchen type:Floor"
+        room: Kitchen
+
+    example_floor:
+      instanceId: 91
+      name: Floor_L1
+      active: true
+      position: [0.0, 0.0, 0.0]
+      rotation: [0, 0, 0, 1]  # PROPOSED: Quaternion (identity rotation)
+      scale: [1, 1, 1]
+      childCount: 1
+      slsAdapters:
+        pivotWorld: [0.0, 0.0, 0.0]
+        rotationSLSToWorld: [0, 0, 0, 1]
+      semanticPoints:
+        - [top,    0, 0, 0, 0, 1, 0]
+        - [bottom, 0, 0, 0, 0,-1, 0]
+      roomBindings:  # PROPOSED
+        top: Kitchen
+        bottom: "__EXTERIOR__"
+
+  object_instances:
+    example_shelf:
+      instanceId: 204
+      name: Shelf_Kitchen_01
+      active: true
+      position: [2.0, 1.2, 0.08]
+      rotation: [0, 0, 0, 1]  # PROPOSED: Quaternion (was Euler)
+      scale: [1, 1, 1]
+      childCount: 0
+      slsAdapters:
+        pivotWorld: [2.0, 1.2, 0.08]
+        rotationSLSToWorld: [0, 0, 0, 1]
+      semanticPoints:
+        - [back, 0, 0.3, -0.05, 0, 0, -1]
+        - [top,  0, 0.6,  0,    0, 1,  0]
+      bindings:  # PROPOSED
+        bindingsVersion: 1
+        contact:
+          side: back
+          target: "room:Kitchen type:Wall"
+          targetSide: front
+        room: Kitchen
+
+    example_mug_adjacent:
+      instanceId: 215
+      name: Mug_02
+      active: true
+      position: [3.55, 0.811, 4.208]
+      rotation: [0, 0, 0, 1]  # PROPOSED: Quaternion (was Euler)
+      scale: [1, 1, 1]
+      childCount: 0
+      slsAdapters:
+        pivotWorld: [3.55, 0.811, 4.208]
+        rotationSLSToWorld: [0, 0, 0, 1]
+      semanticPoints:
+        - [bottom, 0, -0.05, 0, 0, -1, 0]
+      bindings:  # PROPOSED
+        bindingsVersion: 1
+        contact:
+          side: bottom
+          target: "name:Table_01"
+          targetSide: top
+        adjacent:
+          - mySide: left
+            target: Mug_01
+            theirSide: right
+            gap: 0.05
+        room: Kitchen
+
+llm_workflow:
+
+  creating_walls:
+    step_1: User specifies room layout
+    step_2: Calculate wall placement using SLS math (wall.bottom → floor.top, etc.)
+    step_3: Determine which rooms are on which faces
+    step_4: Create wall with both bindings and roomBindings
+
+    example:
+      user_input: "Create kitchen to south, hall to north, shared wall at Z=4m"
+
+      calculation:
+        - Wall at Z=4m, rotated to face south into kitchen
+        - Front face points south (into kitchen)
+        - Back face points north (into hall)
+
+      tool_call:
+        prefabPath: Assets/Prefabs/Wall_4m.prefab
+        name: Wall_Shared_01
+        position: { x: 2.0, y: 0.0, z: 4.0 }
+        rotation: { x: 0, y: 1, z: 0, w: 0 }  # 180° Y
+        scale: { x: 1, y: 1, z: 1 }
+        roomBindings:
+          front: Kitchen
+          back: Hall
+        bindings:
+          bindingsVersion: 1
+          contact:
+            side: bottom
+            target: { room: Kitchen, type: Floor }
+          room: Kitchen
+
+  creating_floors:
+    step_1: Determine what's above and below
+    step_2: Calculate floor placement
+    step_3: Set roomBindings with top/bottom assignments
+
+    example_ground_floor:
+      roomBindings:
+        top: Kitchen
+        bottom: "__EXTERIOR__"
+      bindings:
+        contact:
+          side: bottom
+          target: { type: Foundation }
+        room: Kitchen
+
+    example_second_floor:
+      roomBindings:
+        top: Bedroom
+        bottom: LivingRoom
+      bindings:
+        contact:
+          side: top
+          target: { room: LivingRoom, type: Ceiling }
+        room: Bedroom
+
+  placing_props:
+    step_1: Perform SLS alignment math (e.g., shelf.back → wall.front)
+    step_2: Record contact side and target query
+    step_3: Determine targetSide from alignment
+    step_4: Look up contacted surface's roomBindings
+    step_5: Copy appropriate room value
+    step_6: If collision offset used, record adjacency
+
+    example_shelf_on_kitchen_wall:
+      calculation:
+        - Align shelf.back to wall.front
+        - Wall query: "room:Kitchen type:Wall"
+        - Resolver finds Wall_East_03 (roomBindings.front = "Kitchen")
+        - Uses wall.front semantic point
+
+      result:
+        bindings:
+          contact:
+            side: back
+            target: "room:Kitchen type:Wall"
+            targetSide: front
+          room: Kitchen
+
+    example_ivy_outside:
+      calculation:
+        - Align ivy.back to wall.back
+        - Wall query: "room:LivingRoom type:Wall"
+        - Resolver finds Wall_North_Exterior
+        - Wall has roomBindings: { front: "LivingRoom", back: "__EXTERIOR__" }
+        - Uses wall.back semantic point
+
+      result:
+        bindings:
+          contact:
+            side: back
+            target: { room: LivingRoom, type: Wall }
+            targetSide: back
+          room: "__EXTERIOR__"
+
+  collision_aware_placement:
+    step_1: Calculate ideal pivot using SLS math
+    step_2: Build lateral footprint (AABB) by transforming ALL semantic points to world
+    step_3: Test XZ overlap with already-placed objects on same surface
+    step_4: If overlap, run offset search [0.05, 0.10, 0.15, 0.20]m in 8 directions
+    step_5: For each successful offset, record adjacent relationship
+    step_6: Log which offsets were tried (for debugging slow tool calls)
+
+    collision_policy:
+      - Lateral AABB from semantic points (existing approach)
+      - clearance on contact interacts with adjacent.gap only in X/Z, never Y
+      - Place larger footprints first
+
+    example_two_mugs:
+      first_mug:
+        name: Mug_01
+        position: [3.5, 0.811, 4.208]
+        bindings:
+          contact: { side: bottom, target: "name:Table_01" }
+          room: Kitchen
+
+      second_mug:
+        calculation:
+          - Ideal pivot: [3.5, 0.811, 4.208] (same as Mug_01)
+          - Footprint overlaps with Mug_01
+          - Try offset +X 0.05m → [3.55, 0.811, 4.208]
+          - No overlap, valid position
+
+        result:
+          name: Mug_02
+          position: [3.55, 0.811, 4.208]
+          bindings:
+            contact: { side: bottom, target: "name:Table_01" }
+            adjacent:
+              - mySide: left
+                target: Mug_01
+                theirSide: right
+                gap: 0.05
+            room: Kitchen
+
+validation:
+
+  pre_flight_checks:
+    description: LLM mental checklist before calling instantiateObjects
+
+    contact_side_matches_math:
+      rule: bindings.contact.side must match semantic point used in alignment
+      example: If calculated shelf.back → wall.front, then contact.side = "back"
+
+    contact_target_valid:
+      rule: Target query must resolve to existing instance (scene or current batch)
+      note: Can reference objects created in same tool call batch
+
+    y_verification:
+      rule: For on-surface, verify bottom_world.y == target.top_world.y ± 0.01
+      applies: When contact.side = "bottom" and target has "top" semantic point
+
+    room_lookup_correct:
+      rule: bindings.room must match contacted face's room assignment
+      example: |
+        contact = { side: "back", target: "room:Kitchen type:Wall" }
+        Resolved wall: Wall_X with roomBindings.front = "Kitchen"
+        Used face: front (because targetSide auto-selected from roomBindings)
+        Therefore: bindings.room = "Kitchen"
+
+    adjacency_only_when_used:
+      rule: Only emit adjacent array if collision offset was actually applied
+
+    quaternion_normalization:
+      rule: Normalize quaternions after multiply
+      fallback: If len < 1e-6, use identity quaternion
+
+    semantic_points_exist:
+      rule: Both object and target must have required semantic points
+      failure: "Missing 'bottom' semantic point on Mug (prefab: Mug.prefab). Add in Semantic Annotator."
+
+  runtime_validation:
+    description: System validation after object creation
+
+    bindings_persistence:
+      rule: Persist bindings into instance record for trace/debug
+      location: Scene context data structure
+
+    reindexing:
+      rule: Compute and store slsAdapters and derived SLS points
+      note: Existing behavior, unchanged
+
+  dry_run_mode:
+    description: Validation without scene changes
+    purpose: Debug placement calculations before committing
+
+    flag: dryRun: true
+
+    output:
+      - Computed transforms (position, rotation, scale)
+      - Resolved bindings
+      - Validation report (all checks pass/fail)
+      - No scene modifications
+
+edge_cases:
+
+  wall_rotated_and_scaled:
+    scenario: Wall with non-identity rotation and non-uniform scale
+    requirement: SLS math still correct, normals remain unscaled
+    verification: |
+      - Apply R_ls to get SLS normals
+      - Apply scale only on SLS→WORLD for offsets, never on normals
+      - Verify normal_world = R_ws * normal_sls (no scale)
+
+  exterior_targeting:
+    scenario: Placing ivy on exterior wall face
+    example:
+      target: "room:__EXTERIOR__ type:Wall"
+      bindings.room: "__EXTERIOR__"
+
+  multiple_candidates:
+    scenario: Two walls both claim same room on same face
+    resolution: Pick nearest by distance to room centroid, log choice
+    example: "Resolved 'room:Kitchen type:Wall' to Wall_East_03 (nearest to Kitchen centroid)"
+
+  missing_semantic_point:
+    scenario: Object or target lacks required semantic point
+    behavior: Hard fail with clear remediation message
+    example: "Cannot align Mug.bottom to Table_01: Mug missing 'bottom' semantic point. Add in Semantic Annotator."
+
+  adjacent_chain:
+    scenario: Three small items on narrow shelf with gaps
+    requirement: Offset search resolves positions without breaking Y alignment
+    verification: All items maintain bottom_world.y == shelf.top_world.y ± 0.01
+
+  door_window_walls:
+    scenario: Walls with built-in doors/windows (WallDoor2m, WallWindow4m, etc.)
+    implementation: Doors and windows are integrated into complete wall prefabs
+    requirement: Door/window wall prefabs have same roomBindings as regular walls
+    note: |
+      WallDoor2m and WallWindow* prefabs are complete units, not segments
+      They have semantic points (front, back, bottom) just like regular walls
+      roomBindings work identically: {front: "RoomA", back: "RoomB"}
+    future: If wall segmentation is added later, segments should inherit roomBindings from parent
+
+performance:
+
+  single_pass_creation:
+    principle: All inference and validation before calling instantiateObjects
+    reason: Tool calls take minutes, compute everything once
+
+  dry_run_for_debugging:
+    usage: Test complex placements without scene modifications
+    benefit: Iterate on calculations without tool call cost
+
+  batch_object_creation:
+    principle: Create multiple objects in single instantiateObjects call
+    benefit: Amortize tool call overhead
+    note: Objects can reference each other in same batch via name
+
+tool_api:
+
+  instantiateObjects:
+    description: Batch object creation tool (PROPOSED MODIFICATIONS)
+    location: DynamicToolGenerator.cs line 68
+
+    current_parameters:
+      objects:
+        type: array
+        items:
+          prefabPath: { type: string, required: true }
+          name: { type: string, required: true }
+          position: { type: object, required: true }  # Vector3 {x, y, z}
+          rotation: { type: object, optional: true, default: identity }  # Quaternion {x, y, z, w}
+          scale: { type: object, optional: true }  # Vector3 {x, y, z}, omit for prefab default
+          parameters: { type: object, optional: true }  # Flat dict: "ComponentType_fieldName": value
+
+    proposed_parameters:
+      objects:
+        type: array
+        items:
+          prefabPath: { type: string, required: true }
+          name: { type: string, required: true }
+          position: { type: object, required: true }
+          rotation: { type: object, optional: true }
+          scale: { type: object, optional: true }
+          parameters: { type: object, optional: true }
+          bindings: { type: object, optional: true }      # NEW
+          roomBindings: { type: object, optional: true }  # NEW
+
+      dryRun:  # NEW
+        type: boolean
+        default: false
+        description: Validate without creating objects
+
+    example_batch_with_proposed_fields:
+      note: This example shows PROPOSED bindings and roomBindings fields
+      objects:
+        - prefabPath: Assets/Prefabs/Floor_4x4.prefab
+          name: Floor_Kitchen
+          position: { x: 0, y: 0, z: 0 }
+          rotation: { x: 0, y: 0, z: 0, w: 1 }  # Optional
+          scale: { x: 1, y: 1, z: 1 }            # Optional
+          roomBindings:  # PROPOSED
+            top: Kitchen
+            bottom: "__EXTERIOR__"
+
+        - prefabPath: Assets/Prefabs/Wall_4m.prefab
+          name: Wall_East_Kitchen
+          position: { x: 2, y: 0, z: 0 }
+          rotation: { x: 0, y: 0.7071, z: 0, w: 0.7071 }
+          roomBindings:  # PROPOSED
+            front: Kitchen
+            back: Hall
+          bindings:  # PROPOSED
+            bindingsVersion: 1
+            contact:
+              side: bottom
+              target: "name:Floor_Kitchen"
+            room: Kitchen
+
+        - prefabPath: Assets/Prefabs/Table.prefab
+          name: Table_01
+          position: { x: 1.5, y: 0.006, z: 1.5 }
+          bindings:  # PROPOSED
+            bindingsVersion: 1
+            contact:
+              side: bottom
+              target: "name:Floor_Kitchen"
+              targetSide: top
+            room: Kitchen
+
+migration:
+
+  backward_compatibility:
+    existing_scenes: Objects without bindings continue to work
+    adding_incrementally: Add bindings to new objects as created
+
+  prompt_updates:
+    overview: |
+      After implementing bindings and quaternion rotation, prompts must be updated to teach LLMs
+      the new workflows and syntax. Updates should happen after implementation is stable and tested.
+
+    timing: After C# implementation is complete and tested with simple examples
+
+    files_to_update:
+
+      Core/instructions_compact.txt:
+        location: Lines TBD (insert after tool call sections)
+        additions:
+          - target_query_syntax: |
+              ## Target Query Syntax
+
+              When creating objects with bindings, use target queries to reference other objects:
+
+              String form: "key:value [key:value ...]"
+              - "id:173" - by instance ID
+              - "name:Table_01" - by instance name
+              - "room:Kitchen type:Wall" - by room and type
+              - "room:Kitchen type:Floor"
+
+              Object form: { "room": "Kitchen", "type": "Wall" }
+
+              Face resolution: When room is specified and targetSide omitted, system auto-selects face:
+              - For walls: Choose face f where roomBindings[f] == room
+              - For floors: Choose "top" if roomBindings["top"] == room
+
+          - populating_bindings: |
+              ## Populating Bindings
+
+              When creating objects, record placement relationships:
+
+              1. contact.side = semantic point you used (e.g., "bottom" for object.bottom → surface.top)
+              2. contact.target = query to find contacted object (e.g., "room:Kitchen type:Floor")
+              3. contact.targetSide = face used (optional if auto-resolved from roomBindings)
+              4. room = copy from contacted surface's roomBindings[face]
+              5. adjacent = record if collision offset was used (mySide, target, theirSide, gap)
+
+          - roomBindings_for_walls: |
+              ## roomBindings for Walls/Floors
+
+              When creating structural elements, specify which room is on which face:
+
+              Shared wall: { front: "Kitchen", back: "Hall" }
+              Exterior wall: { front: "LivingRoom", back: "__EXTERIOR__" }
+              Ground floor: { top: "Kitchen", bottom: "__EXTERIOR__" }
+              Multi-story: { top: "Bedroom", bottom: "LivingRoom" }
+
+          - validation_checklist_addition: |
+              Add to existing verification checklist:
+              - [ ] Populated bindings.contact with side and target
+              - [ ] If using room query, verified roomBindings exists on target
+              - [ ] Copied correct room from contacted face
+              - [ ] Recorded adjacent if collision offset was used
+
+      Core/instructions_detailed.txt:
+        location: Lines TBD (expand existing workflows)
+        additions:
+          - Same as compact but with detailed examples
+          - Add step-by-step binding population to workflow sections
+          - Expand validation checklist with binding-specific checks
+          - Add failure mode examples (missing roomBindings, ambiguous face resolution)
+
+      Examples/Architecture/walls_and_seams.txt:
+        status: Can now be written (was blocked without bindings)
+        content: |
+          - Basic wall placement on floor
+          - Shared wall between two rooms with roomBindings
+          - Objects on both sides of shared wall using target queries
+          - Exterior wall with interior and exterior objects
+          - Seam verification rules
+          - Examples showing face auto-resolution
+
+      Reference/semantic_architecture.txt:
+        additions:
+          - Document bindings structure
+          - Document roomBindings structure
+          - Explain target query grammar
+          - Explain face resolution logic
+
+    new_workflows_to_teach:
+
+      workflow_1_creating_walls:
+        description: How to create walls with roomBindings
+        example: |
+          User: "Create kitchen to south, hall to north, shared wall at Z=4m"
+
+          Step 1: Calculate wall placement (SLS math - existing workflow)
+          Step 2: Determine room faces
+            - Front points south → front: "Kitchen"
+            - Back points north → back: "Hall"
+          Step 3: Create with roomBindings
+            instantiateObjects({
+              objects: [{
+                prefabPath: "Assets/Prefabs/Wall_4m.prefab",
+                position: {x: 2.0, y: 0.0, z: 4.0},
+                rotation: {x: 0, y: 1, z: 0, w: 0},
+                roomBindings: {
+                  front: "Kitchen",
+                  back: "Hall"
+                },
+                bindings: {
+                  contact: {side: "bottom", target: "room:Kitchen type:Floor"},
+                  room: "Kitchen"
+                }
+              }]
+            })
+
+      workflow_2_placing_props:
+        description: How to place objects with bindings using target queries
+        example: |
+          User: "Place clock on kitchen wall"
+
+          Step 1: Calculate placement (clock.back → wall.front via SLS)
+          Step 2: Record bindings
+            - contact.side = "back" (semantic point used)
+            - contact.target = "room:Kitchen type:Wall" (query)
+            - contact.targetSide = "front" (will auto-resolve from roomBindings)
+          Step 3: Derive room
+            - Target resolves to Wall_East_03
+            - Used wall.front face
+            - wall.roomBindings.front = "Kitchen"
+            - Therefore: bindings.room = "Kitchen"
+          Step 4: Create object
+            instantiateObjects({
+              objects: [{
+                prefabPath: "Assets/Prefabs/Clock.prefab",
+                position: {x: 2.0, y: 1.8, z: 0.08},
+                rotation: {x: 0, y: 0, z: 0, w: 1},
+                bindings: {
+                  contact: {
+                    side: "back",
+                    target: "room:Kitchen type:Wall",
+                    targetSide: "front"
+                  },
+                  room: "Kitchen"
+                }
+              }]
+            })
+
+      workflow_3_adjacent_objects:
+        description: How to record adjacency after collision resolution
+        example: |
+          User: "Place two mugs on table"
+
+          Step 1: Place first mug (no adjacency)
+            bindings: {contact: {side: "bottom", target: "name:Table_01"}, room: "Kitchen"}
+
+          Step 2: Place second mug
+            - Calculate ideal position → overlaps with Mug_01
+            - Run offset search → +0.05m in +X direction
+            - Record adjacency:
+              bindings: {
+                contact: {side: "bottom", target: "name:Table_01"},
+                adjacent: [{
+                  mySide: "left",
+                  target: "Mug_01",
+                  theirSide: "right",
+                  gap: 0.05
+                }],
+                room: "Kitchen"
+              }
+
+    syntax_reference:
+
+      target_query_grammar:
+        string_syntax: "key:value [key:value ...]"
+        allowed_keys: [id, name, type, room, tag]
+        key_descriptions:
+          id: Instance ID from scene context
+          name: Instance name
+          type: Prefab type (Wall, Floor, Furniture, etc.)
+          room: Room name from roomBindings
+          tag: Semantic tag from prefab catalog
+        examples:
+          - "id:173"
+          - "name:Wall_East_03"
+          - "room:Kitchen type:Wall"
+          - "room:__EXTERIOR__ type:Wall"
+          - "type:Wall tag:exterior"
+
+        object_syntax: '{ "key": "value", ... }'
+        examples:
+          - '{ "room": "Kitchen", "type": "Wall" }'
+          - '{ "name": "Table_01" }'
+
+      face_resolution_rules:
+        walls: |
+          When target query includes room and object is Wall:
+          - Find face f ∈ {front, back} where roomBindings[f] == room
+          - If no match: Error "Wall has no face for room 'Kitchen'"
+          - If ambiguous: Error "Multiple faces match, specify targetSide"
+
+        floors: |
+          When target query includes room and object is Floor:
+          - Default: Use "top" for objects standing on floor
+          - Find face f ∈ {top, bottom} where roomBindings[f] == room
+          - If placing on multi-story floor from below, specify targetSide: "bottom"
+
+        ceilings: |
+          When target query includes room and object is Ceiling:
+          - Default: Use "bottom" for objects hanging from ceiling
+          - Find face f ∈ {top, bottom} where roomBindings[f] == room
+          - Note: Ceiling.bottom faces down into room, ceiling.top faces up into room above
+
+      selection_priority:
+        when_multiple_match: |
+          If multiple objects match target query:
+          1. Smallest distance to room centroid (if room specified)
+          2. Creation order (instanceId ascending)
+          3. Name sort (alphabetical)
+
+    validation_additions:
+
+      mental_checklist_items:
+        - "bindings.contact.side matches semantic point used in SLS calculation"
+        - "bindings.contact.target resolves to existing object"
+        - "If using room query, target has roomBindings field"
+        - "bindings.room copied from target.roomBindings[contacted_face]"
+        - "adjacent array only present if collision offset was actually used"
+        - "Y-verification still passes (bottom.y == top.y ± 0.01)"
+
+      common_errors:
+        missing_roomBindings: |
+          Error: "Cannot resolve 'room:Kitchen type:Wall' - Wall_East_03 has no roomBindings"
+          Fix: Ensure wall was created with roomBindings field
+
+        ambiguous_face: |
+          Error: "Multiple faces of Wall_East_03 match room 'Kitchen'"
+          Fix: Specify targetSide explicitly in contact binding
+
+        wrong_room: |
+          Error: "Wall_East_03 has no face assigned to room 'Bathroom'"
+          Fix: Check room name spelling or use different wall
+
+    rotation_format_update:
+
+      change: All rotation fields now use quaternions [x, y, z, w]
+
+      old_format: |
+        Scene context rotation: [0, 90, 0] (Euler angles)
+
+      new_format: |
+        Scene context rotation: [0, 0.7071, 0, 0.7071] (Quaternion)
+
+      impact: |
+        - LLM already sends quaternions in tool calls (no change needed)
+        - Scene context examples must show quaternions (update all examples)
+        - Remove any Euler angle references from prompts
+
+implementation:
+
+  c_sharp:
+    files_to_modify:
+      InstantiatePrefabAction.cs:
+        line: 49
+        add_fields: |
+          public Dictionary<string, string> roomBindings;
+          public Bindings bindings;
+
+      DynamicToolGenerator.cs:
+        line: 122
+        modify: Add bindings and roomBindings to tool schema after "parameters"
+
+      ProjectIndexer.cs:
+        changes:
+          - line: 118
+            change: "FormatVector3Array(go.transform.eulerAngles)"
+            to: "FormatQuaternionArray(go.transform.rotation)"
+            reason: Use quaternions everywhere (eliminate Euler inconsistency)
+
+          - line: 187
+            add: Serialize bindings and roomBindings to scene context JSON
+
+      DynamicPlanApplier.cs:
+        modify: |
+          - Parse bindings/roomBindings from tool call JSON
+          - Implement target query resolver
+          - Implement face resolution logic
+          - Store bindings in scene after object creation
+
+    new_classes:
+      Bindings:
+        fields:
+          - bindingsVersion (int)
+          - contact (ContactBinding)
+          - adjacent (List<AdjacentBinding>)
+          - room (string)
+
+      ContactBinding:
+        fields:
+          - side (string)
+          - target (string or TargetQuery)
+          - targetSide (string, optional)
+
+      AdjacentBinding:
+        fields:
+          - mySide (string)
+          - target (string)
+          - theirSide (string)
+          - gap (float, optional)
+
+      TargetQuery:
+        fields:
+          - id (int, optional)
+          - name (string, optional)
+          - type (string, optional)
+          - room (string, optional)
+
+    optional:
+      - Query API: GetRoomObjects(roomName)
+      - Validation API: ValidateBindings(object)
+      - Dry-run mode implementation
+      - Visual debugging in editor
+
+  indexing:
+    consideration: ProjectIndexer may need roomBindings in indexed data
+    query_example: "Which walls separate kitchen and hall?"
+
+final_verdict: |
+  Design is solid and aligned with SLS architecture.
+
+  Key additions implemented:
+  - Target query grammar with string/object forms
+  - Face resolution rules for shared walls
+  - Selection priority for deterministic matching
+  - Constants for tolerances and defaults
+  - Validation rules and error handling
+  - Dry-run mode for debugging
+  - Lifecycle persistence and versioning
+
+  The LLM has everything needed to compute SLS-correct placements in one shot
+  per create, even for shared walls and multi-item surfaces, without extra round-trips.
