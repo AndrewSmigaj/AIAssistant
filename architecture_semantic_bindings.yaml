@@ -41,7 +41,9 @@ constants:
   gap_default: 0.05       # meters, for adjacent if omitted
   vertical_tolerance: 0.01  # meters, for Y-axis verification
   quaternion_epsilon: 1.0e-6  # normalize after multiply, fallback to identity if len < epsilon
-  exterior_token: "__EXTERIOR__"
+  exterior_values:
+    outside: "Face is exposed to outdoors (can place items)"
+    blocked: "Face is exterior but inaccessible (basement walls, underground)"
 
 data_structures:
 
@@ -53,15 +55,17 @@ data_structures:
     schema:
       type: object
       properties:
-        front: { type: string }   # room name or "__EXTERIOR__"
-        back: { type: string }    # room name or "__EXTERIOR__"
-        top: { type: string }     # room name or "__EXTERIOR__"
-        bottom: { type: string }  # room name or "__EXTERIOR__"
+        front: { type: string }   # room name, "outside", or "blocked"
+        back: { type: string }    # room name, "outside", or "blocked"
+        top: { type: string }     # room name, "outside", or "blocked"
+        bottom: { type: string }  # room name, "outside", or "blocked"
         left: { type: string }    # rare
         right: { type: string }   # rare
 
     rules:
-      - Use "__EXTERIOR__" (string) for exterior faces, not null
+      - Use "outside" for exterior faces exposed to outdoors (can place items)
+      - Use "blocked" for exterior faces that are inaccessible (basement walls underground)
+      - Never use null or empty string for faces
       - When wall segment is cut by door/window, ensure roomBindings on segment instances
       - Face points must remain valid and continuous after cuts
 
@@ -80,7 +84,7 @@ data_structures:
         type: Wall
         roomBindings:
           front: LivingRoom
-          back: "__EXTERIOR__"
+          back: outside
 
       ground_floor:
         instanceId: 91
@@ -88,7 +92,7 @@ data_structures:
         type: Floor
         roomBindings:
           top: Kitchen
-          bottom: "__EXTERIOR__"
+          bottom: blocked  # Ground/foundation - inaccessible
 
       multi_story_floor:
         instanceId: 92
@@ -187,7 +191,7 @@ target_resolution:
         - "name:Wall_East_03"
         - "room:Kitchen type:Wall"
         - "room:Kitchen type:Floor"
-        - "room:__EXTERIOR__ type:Wall"
+        - "room:outside type:Wall"
         - "type:Wall tag:exterior"
 
     object_form:
@@ -221,7 +225,7 @@ target_resolution:
       logic: |
         Choose face f ∈ {front, back} where roomBindings[f] == "Kitchen"
         If both faces map to rooms but neither matches, FAIL with clear error
-        If one face is "__EXTERIOR__" and other matches room, use matching face
+        If one face is "outside" or "blocked" and other matches room, use matching face
 
     rule_for_floors:
       when: "room:Kitchen type:Floor" and targetSide omitted
@@ -318,7 +322,7 @@ scene_integration:
         - [bottom, 0, 0, 0, 0,-1, 0]
       roomBindings:  # PROPOSED
         top: Kitchen
-        bottom: "__EXTERIOR__"
+        bottom: blocked
 
   object_instances:
     example_shelf:
@@ -409,7 +413,7 @@ llm_workflow:
     example_ground_floor:
       roomBindings:
         top: Kitchen
-        bottom: "__EXTERIOR__"
+        bottom: blocked
       bindings:
         contact:
           side: bottom
@@ -454,7 +458,7 @@ llm_workflow:
         - Align ivy.back to wall.back
         - Wall query: "room:LivingRoom type:Wall"
         - Resolver finds Wall_North_Exterior
-        - Wall has roomBindings: { front: "LivingRoom", back: "__EXTERIOR__" }
+        - Wall has roomBindings: { front: "LivingRoom", back: "outside" }
         - Uses wall.back semantic point
 
       result:
@@ -463,7 +467,7 @@ llm_workflow:
             side: back
             target: { room: LivingRoom, type: Wall }
             targetSide: back
-          room: "__EXTERIOR__"
+          room: outside
 
   collision_aware_placement:
     step_1: Calculate ideal pivot using SLS math
@@ -565,8 +569,8 @@ edge_cases:
   exterior_targeting:
     scenario: Placing ivy on exterior wall face
     example:
-      target: "room:__EXTERIOR__ type:Wall"
-      bindings.room: "__EXTERIOR__"
+      target: "room:outside type:Wall"
+      bindings.room: outside
 
   multiple_candidates:
     scenario: Two walls both claim same room on same face
@@ -644,7 +648,7 @@ tool_api:
           scale: { x: 1, y: 1, z: 1 }            # Optional
           roomBindings:  # PROPOSED
             top: Kitchen
-            bottom: "__EXTERIOR__"
+            bottom: blocked
 
         - prefabPath: Assets/Prefabs/Wall_4m.prefab
           name: Wall_East_Kitchen
@@ -723,8 +727,9 @@ migration:
               When creating structural elements, specify which room is on which face:
 
               Shared wall: { front: "Kitchen", back: "Hall" }
-              Exterior wall: { front: "LivingRoom", back: "__EXTERIOR__" }
-              Ground floor: { top: "Kitchen", bottom: "__EXTERIOR__" }
+              Exterior wall: { front: "LivingRoom", back: "outside" }
+              Ground floor: { top: "Kitchen", bottom: "blocked" }
+              Basement wall: { front: "Basement", back: "blocked" }
               Multi-story: { top: "Bedroom", bottom: "LivingRoom" }
 
           - validation_checklist_addition: |
@@ -857,7 +862,7 @@ migration:
           - "id:173"
           - "name:Wall_East_03"
           - "room:Kitchen type:Wall"
-          - "room:__EXTERIOR__ type:Wall"
+          - "room:outside type:Wall"
           - "type:Wall tag:exterior"
 
         object_syntax: '{ "key": "value", ... }'
