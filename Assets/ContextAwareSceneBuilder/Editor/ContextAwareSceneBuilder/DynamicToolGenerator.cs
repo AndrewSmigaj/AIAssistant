@@ -123,6 +123,53 @@ namespace ContextAwareSceneBuilder.Editor
                 ""type"": ""object"",
                 ""description"": ""Component parameter overrides using 'ComponentType_fieldName' format. Example: {'Rigidbody_mass': 10, 'Light_intensity': 2.5}"",
                 ""additionalProperties"": true
+              },
+              ""roomBindings"": {
+                ""type"": ""object"",
+                ""description"": ""Room labels for structural faces. Keys: front/back/top/bottom/left/right. Values: room name, 'outside', or 'blocked'."",
+                ""additionalProperties"": {""type"": ""string""}
+              },
+              ""bindings"": {
+                ""type"": ""object"",
+                ""description"": ""Placement relationships: contact, adjacent, room."",
+                ""properties"": {
+                  ""contact"": {
+                    ""type"": ""object"",
+                    ""description"": ""Primary physical contact defining alignment"",
+                    ""required"": [""side"", ""target""],
+                    ""properties"": {
+                      ""side"": {
+                        ""type"": ""string"",
+                        ""description"": ""Semantic point on this object to use for alignment (e.g., 'bottom', 'back', 'spout')""
+                      },
+                      ""target"": {
+                        ""type"": ""string"",
+                        ""description"": ""Query to resolve target instance: 'id:173', 'name:Table_01', 'room:Kitchen type:Wall'""
+                      },
+                      ""targetSide"": {
+                        ""type"": ""string"",
+                        ""description"": ""Target semantic point to align to (e.g., 'top', 'front'). Optional if room specified.""
+                      }
+                    }
+                  },
+                  ""adjacent"": {
+                    ""type"": ""array"",
+                    ""description"": ""Lateral or other spatial relationships"",
+                    ""items"": {
+                      ""type"": ""object"",
+                      ""properties"": {
+                        ""mySide"": {""type"": ""string"", ""description"": ""Relationship descriptor from this object""},
+                        ""target"": {""type"": ""string"", ""description"": ""Target instance identifier""},
+                        ""theirSide"": {""type"": ""string"", ""description"": ""Relationship descriptor from target""},
+                        ""gap"": {""type"": ""number"", ""description"": ""Distance in meters"", ""default"": 0.05}
+                      }
+                    }
+                  },
+                  ""room"": {
+                    ""type"": ""string"",
+                    ""description"": ""Room assignment""
+                  }
+                }
               }
             },
             ""required"": [""prefabPath"", ""name"", ""position""]

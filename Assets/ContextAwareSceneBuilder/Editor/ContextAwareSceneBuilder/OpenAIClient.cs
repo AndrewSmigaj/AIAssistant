@@ -599,6 +599,26 @@ namespace ContextAwareSceneBuilder.Editor
                         }
                     }
 
+                    // Parse roomBindings (optional)
+                    Dictionary<string, string> roomBindings = null;
+                    var roomBindingsNode = obj["roomBindings"];
+                    if (roomBindingsNode != null && roomBindingsNode.Count > 0)
+                    {
+                        roomBindings = new Dictionary<string, string>();
+                        foreach (var rbKvp in roomBindingsNode)
+                        {
+                            roomBindings[rbKvp.Key] = rbKvp.Value.Value;
+                        }
+                    }
+
+                    // Parse bindings (optional)
+                    Bindings bindings = null;
+                    var bindingsNode = obj["bindings"];
+                    if (bindingsNode != null)
+                    {
+                        bindings = ParseBindings(bindingsNode);
+                    }
+
                     // Create action - CRITICAL: All actions share the same callId!
                     actions.Add(new InstantiatePrefabAction
                     {
@@ -608,7 +628,9 @@ namespace ContextAwareSceneBuilder.Editor
                         position = position,
                         rotation = rotation,
                         scale = scale,
-                        parameters = parameters
+                        parameters = parameters,
+                        roomBindings = roomBindings,
+                        bindings = bindings
                     });
                 }
                 catch (Exception ex)
@@ -836,6 +858,55 @@ namespace ContextAwareSceneBuilder.Editor
             {
                 throw new Exception($"Invalid removeComponent parameters: {ex.Message}");
             }
+        }
+
+        /// <summary>
+        /// Parses bindings object from JSON into Bindings data structure.
+        /// </summary>
+        /// <param name="node">JSON node containing bindings data</param>
+        /// <returns>Parsed Bindings object or null if node is null</returns>
+        private static Bindings ParseBindings(JSONNode node)
+        {
+            if (node == null) return null;
+
+            var bindings = new Bindings
+            {
+                room = node["room"]?.Value
+            };
+
+            // Parse contact (primary alignment binding)
+            var contactNode = node["contact"];
+            if (contactNode != null)
+            {
+                bindings.contact = new ContactBinding
+                {
+                    side = contactNode["side"]?.Value,
+                    target = contactNode["target"]?.Value,
+                    targetSide = contactNode["targetSide"]?.Value
+                };
+            }
+
+            // Parse adjacent array (optional)
+            var adjacentNode = node["adjacent"];
+            if (adjacentNode != null && adjacentNode.IsArray)
+            {
+                bindings.adjacent = new List<AdjacentBinding>();
+                foreach (var adjacentKvp in adjacentNode.AsArray)
+                {
+                    var item = adjacentKvp.Value;
+                    if (item == null) continue;
+
+                    bindings.adjacent.Add(new AdjacentBinding
+                    {
+                        mySide = item["mySide"]?.Value,
+                        target = item["target"]?.Value,
+                        theirSide = item["theirSide"]?.Value,
+                        gap = item["gap"]?.AsFloat ?? 0.05f
+                    });
+                }
+            }
+
+            return bindings;
         }
     }
 }

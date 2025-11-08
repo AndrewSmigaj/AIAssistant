@@ -80,156 +80,133 @@ namespace ContextAwareSceneBuilder.Editor
         }
 
         /// <summary>
-        /// Indexes all scenes in the project (not just build settings).
-        /// Opens scenes additively to inspect them, then closes them without saving.
+        /// Indexes the active scene only.
         /// </summary>
         public static void IndexScenes()
         {
             try
             {
-                // Find ALL scene files in project (not just build settings)
-                string[] sceneGuids = AssetDatabase.FindAssets("t:Scene");
+                // Get the active scene (already open, no need to open/close)
+                Scene scene = SceneManager.GetActiveScene();
 
-                Debug.Log($"[AI Assistant] Found {sceneGuids.Length} scene(s) to index");
-
-                foreach (string guid in sceneGuids)
+                if (!scene.IsValid())
                 {
-                    string scenePath = AssetDatabase.GUIDToAssetPath(guid);
+                    Debug.LogWarning("[AI Assistant] No valid active scene to index");
+                    return;
+                }
 
-                    // Skip scenes in Packages (read-only, can't be opened)
-                    if (scenePath.StartsWith("Packages/"))
+                Debug.Log($"[AI Assistant] Indexing active scene: {scene.name}");
+
+                // Build minified JSON manually (token-optimized for LLM)
+                var sb = new StringBuilder();
+                sb.Append("{");
+                sb.Append($"\"sceneName\":\"{EscapeJson(scene.name)}\",");
+                sb.Append($"\"scenePath\":\"{EscapeJson(scene.path)}\",");
+                sb.Append("\"rootObjects\":[");
+
+                // Get root GameObjects
+                GameObject[] rootGOs = scene.GetRootGameObjects();
+                for (int i = 0; i < rootGOs.Length; i++)
+                {
+                    GameObject go = rootGOs[i];
+
+                    sb.Append("{");
+                    sb.Append($"\"instanceId\":{go.GetInstanceID()},");
+                    sb.Append($"\"name\":\"{EscapeJson(go.name)}\",");
+                    sb.Append($"\"active\":{(go.activeInHierarchy ? "true" : "false")},");
+                    sb.Append($"\"position\":{FormatVector3Array(go.transform.position)},");
+                    sb.Append($"\"rotation\":{FormatQuaternionArray(go.transform.rotation)},");
+                    sb.Append($"\"scale\":{FormatVector3Array(go.transform.localScale)},");
+                    sb.Append($"\"childCount\":{go.transform.childCount}");
+
+                    // Extract semantic points (transform to UNSCALED SLS)
+                    Transform semanticPointsContainer = go.transform.Find("SemanticPoints");
+                    if (semanticPointsContainer != null && semanticPointsContainer.childCount > 0)
                     {
-                        Debug.Log($"[AI Assistant] Skipping package scene: {scenePath}");
-                        continue;
-                    }
+                        // Get prefab source and load R_ls from registry
+                        GameObject prefabRoot = PrefabUtility.GetCorrespondingObjectFromSource(go);
+                        string prefabPath = prefabRoot != null ? AssetDatabase.GetAssetPath(prefabRoot) : null;
+                        Quaternion R_ls = Quaternion.identity;
 
-                    try
-                    {
-                        // Open scene additively (don't close current scenes)
-                        Scene scene = EditorSceneManager.OpenScene(scenePath, OpenSceneMode.Additive);
-
-                        // Build minified JSON manually (token-optimized for LLM)
-                        var sb = new StringBuilder();
-                        sb.Append("{");
-                        sb.Append($"\"sceneName\":\"{EscapeJson(scene.name)}\",");
-                        sb.Append($"\"scenePath\":\"{EscapeJson(scenePath)}\",");
-                        sb.Append("\"rootObjects\":[");
-
-                        // Get root GameObjects
-                        GameObject[] rootGOs = scene.GetRootGameObjects();
-                        for (int i = 0; i < rootGOs.Length; i++)
+                        if (!string.IsNullOrEmpty(prefabPath))
                         {
-                            GameObject go = rootGOs[i];
-
-                            sb.Append("{");
-                            sb.Append($"\"instanceId\":{go.GetInstanceID()},");
-                            sb.Append($"\"name\":\"{EscapeJson(go.name)}\",");
-                            sb.Append($"\"active\":{(go.activeInHierarchy ? "true" : "false")},");
-                            sb.Append($"\"position\":{FormatVector3Array(go.transform.position)},");
-                            sb.Append($"\"rotation\":{FormatVector3Array(go.transform.eulerAngles)},");
-                            sb.Append($"\"scale\":{FormatVector3Array(go.transform.localScale)},");
-                            sb.Append($"\"childCount\":{go.transform.childCount}");
-
-                            // Extract semantic points (transform to UNSCALED SLS)
-                            Transform semanticPointsContainer = go.transform.Find("SemanticPoints");
-                            if (semanticPointsContainer != null && semanticPointsContainer.childCount > 0)
+                            string registryPath = Path.Combine(PROJECT_ARTIFACTS, "PrefabRegistry.json");
+                            if (File.Exists(registryPath))
                             {
-                                // Get prefab source and load R_ls from registry
-                                GameObject prefabRoot = PrefabUtility.GetCorrespondingObjectFromSource(go);
-                                string prefabPath = prefabRoot != null ? AssetDatabase.GetAssetPath(prefabRoot) : null;
-                                Quaternion R_ls = Quaternion.identity;
-
-                                if (!string.IsNullOrEmpty(prefabPath))
+                                string registryJson = File.ReadAllText(registryPath);
+                                PrefabRegistry registry = JsonUtility.FromJson<PrefabRegistry>(registryJson);
+                                PrefabMetadata metadata = System.Array.Find(registry.prefabs, p => p.prefabPath == prefabPath);
+                                if (metadata != null)
                                 {
-                                    string registryPath = Path.Combine(PROJECT_ARTIFACTS, "PrefabRegistry.json");
-                                    if (File.Exists(registryPath))
-                                    {
-                                        string registryJson = File.ReadAllText(registryPath);
-                                        PrefabRegistry registry = JsonUtility.FromJson<PrefabRegistry>(registryJson);
-                                        PrefabMetadata metadata = System.Array.Find(registry.prefabs, p => p.prefabPath == prefabPath);
-                                        if (metadata != null)
-                                        {
-                                            R_ls = metadata.semanticLocalSpaceRotation;
-                                        }
-                                    }
+                                    R_ls = metadata.semanticLocalSpaceRotation;
                                 }
-
-                                // Calculate R_ws (SLS → World): R_ws = R_wl * R_ls⁻¹
-                                Quaternion R_wl = go.transform.rotation;
-                                Quaternion R_ws = R_wl * Quaternion.Inverse(R_ls);
-                                Vector3 p_wl = go.transform.position;
-                                Vector3 S = go.transform.localScale;
-
-                                // Export slsAdapters
-                                sb.Append(",\"slsAdapters\":{");
-                                sb.Append($"\"pivotWorld\":{FormatVector3Array(p_wl)},");
-                                sb.Append($"\"rotationSLSToWorld\":{FormatQuaternionArray(R_ws)}");
-                                sb.Append("}");
-
-                                // Transform semantic points to UNSCALED SLS
-                                sb.Append(",\"semanticPoints\":[");
-                                for (int p = 0; p < semanticPointsContainer.childCount; p++)
-                                {
-                                    Transform child = semanticPointsContainer.GetChild(p);
-
-                                    // Get normal from marker (in LOCAL space, not transformed by instance)
-                                    SemanticPointMarker marker = child.GetComponent<SemanticPointMarker>();
-                                    Vector3 normal_local = marker != null ? marker.normal : Vector3.zero;
-
-                                    // Transform offset: world → local (scaled) → local (unscaled) → SLS
-                                    Vector3 offset_world = child.position - p_wl;
-                                    Vector3 offset_local_scaled = Quaternion.Inverse(R_wl) * offset_world;
-                                    Vector3 offset_local = new Vector3(
-                                        S.x != 0 ? offset_local_scaled.x / S.x : 0,
-                                        S.y != 0 ? offset_local_scaled.y / S.y : 0,
-                                        S.z != 0 ? offset_local_scaled.z / S.z : 0
-                                    );
-                                    Vector3 offset_sls = R_ls * offset_local;
-
-                                    // Transform normal: local → SLS (rotation only, no scale)
-                                    Vector3 normal_sls = R_ls * normal_local;
-
-                                    // Export 7-value tuple [name, offset_x, offset_y, offset_z, normal_x, normal_y, normal_z]
-                                    sb.Append($"[\"{EscapeJson(child.name)}\",{CleanFloat(offset_sls.x)},{CleanFloat(offset_sls.y)},{CleanFloat(offset_sls.z)},{CleanFloat(normal_sls.x)},{CleanFloat(normal_sls.y)},{CleanFloat(normal_sls.z)}]");
-                                    if (p < semanticPointsContainer.childCount - 1)
-                                        sb.Append(",");
-                                }
-                                sb.Append("]");
                             }
+                        }
 
-                            sb.Append("}");
+                        // Calculate R_ws (SLS → World): R_ws = R_wl * R_ls⁻¹
+                        Quaternion R_wl = go.transform.rotation;
+                        Quaternion R_ws = R_wl * Quaternion.Inverse(R_ls);
+                        Vector3 p_wl = go.transform.position;
+                        Vector3 S = go.transform.localScale;
 
-                            if (i < rootGOs.Length - 1)
+                        // Export slsAdapters
+                        sb.Append(",\"slsAdapters\":{");
+                        sb.Append($"\"pivotWorld\":{FormatVector3Array(p_wl)},");
+                        sb.Append($"\"rotationSLSToWorld\":{FormatQuaternionArray(R_ws)}");
+                        sb.Append("}");
+
+                        // Transform semantic points to UNSCALED SLS
+                        sb.Append(",\"semanticPoints\":[");
+                        for (int p = 0; p < semanticPointsContainer.childCount; p++)
+                        {
+                            Transform child = semanticPointsContainer.GetChild(p);
+
+                            // Get normal from marker (in LOCAL space, not transformed by instance)
+                            SemanticPointMarker marker = child.GetComponent<SemanticPointMarker>();
+                            Vector3 normal_local = marker != null ? marker.normal : Vector3.zero;
+
+                            // Transform offset: world → local (scaled) → local (unscaled) → SLS
+                            Vector3 offset_world = child.position - p_wl;
+                            Vector3 offset_local_scaled = Quaternion.Inverse(R_wl) * offset_world;
+                            Vector3 offset_local = new Vector3(
+                                S.x != 0 ? offset_local_scaled.x / S.x : 0,
+                                S.y != 0 ? offset_local_scaled.y / S.y : 0,
+                                S.z != 0 ? offset_local_scaled.z / S.z : 0
+                            );
+                            Vector3 offset_sls = R_ls * offset_local;
+
+                            // Transform normal: local → SLS (rotation only, no scale)
+                            Vector3 normal_sls = R_ls * normal_local;
+
+                            // Export 7-value tuple [name, offset_x, offset_y, offset_z, normal_x, normal_y, normal_z]
+                            sb.Append($"[\"{EscapeJson(child.name)}\",{CleanFloat(offset_sls.x)},{CleanFloat(offset_sls.y)},{CleanFloat(offset_sls.z)},{CleanFloat(normal_sls.x)},{CleanFloat(normal_sls.y)},{CleanFloat(normal_sls.z)}]");
+                            if (p < semanticPointsContainer.childCount - 1)
                                 sb.Append(",");
                         }
-
-                        sb.Append("]}");
-
-                        // Write artifact
-                        string json = sb.ToString();
-                        string outputPath = Path.Combine(SCENES_ARTIFACTS, $"{scene.name}.json");
-
-                        if (WriteArtifactIfChanged(outputPath, json))
-                        {
-                            Debug.Log($"[AI Assistant] Updated scene artifact: {scene.name}");
-                        }
-
-                        // Close the scene (don't save changes)
-                        // Only close if it's not the last loaded scene (Unity requirement)
-                        if (SceneManager.loadedSceneCount > 1)
-                        {
-                            EditorSceneManager.CloseScene(scene, true);
-                        }
+                        sb.Append("]");
                     }
-                    catch (Exception ex)
-                    {
-                        Debug.LogError($"[AI Assistant] Failed to index scene {scenePath}: {ex.Message}");
-                    }
+
+                    sb.Append("}");
+
+                    if (i < rootGOs.Length - 1)
+                        sb.Append(",");
+                }
+
+                sb.Append("]}");
+
+
+                // Write artifact
+                string json = sb.ToString();
+                string outputPath = Path.Combine(SCENES_ARTIFACTS, $"{scene.name}.json");
+
+                if (WriteArtifactIfChanged(outputPath, json))
+                {
+                    Debug.Log($"[AI Assistant] Updated scene artifact: {scene.name}");
                 }
             }
             catch (Exception ex)
             {
-                Debug.LogError($"[AI Assistant] Failed to index scenes: {ex.Message}");
+                Debug.LogError($"[AI Assistant] Failed to index active scene: {ex.Message}");
             }
         }
 

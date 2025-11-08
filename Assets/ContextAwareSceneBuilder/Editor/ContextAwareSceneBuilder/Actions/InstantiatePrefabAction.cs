@@ -49,6 +49,19 @@ namespace ContextAwareSceneBuilder.Editor
         public Dictionary<string, object> parameters;
 
         /// <summary>
+        /// Room assignments for structural elements (walls, floors, ceilings).
+        /// Maps face names to room labels: {"front": "Kitchen", "back": "Hall"}
+        /// Values can be room names, "outside" (exterior), or "blocked" (inaccessible).
+        /// </summary>
+        public Dictionary<string, string> roomBindings;
+
+        /// <summary>
+        /// Placement relationships computed during creation.
+        /// Records contact, adjacency, and room associations.
+        /// </summary>
+        public Bindings bindings;
+
+        /// <summary>
         /// Human-readable description for approval UI.
         /// </summary>
         public string GetDescription()
